@@ -23,7 +23,7 @@ DeepSeek Harness 的**辅助会话**插件：在**当前会话窗口内**、会�
 | 回传 | 「复制结论到主会话」只把文本插入主会话输入框为草稿，用户确认后才发送（严格单向） |
 | 生命周期 | 资源状态机 `creating / ready / closing / closeFailed / closed / ended`；只有**标签自身的关闭动作**会销毁；销毁 = 取消回合 → `dispose()` → 删会话日志目录 → 删投影缓存行 → 删标记文件。刷新重连见下（PRD v2.0 §7） |
 
-## 三个平台约束（决定了本插件的关键取舍）
+## 四个平台约束（决定了本插件的关键取舍）
 
 ### 1. 继承不能有可见的历史 ⇒ 空 fork + 隐藏消息注入（v3 修订）
 
@@ -59,6 +59,47 @@ v3 因此把继承升级为：`fork(atSeq:0)`（**空前缀**，只取 header �
 
 Host 命令目录（`dsh-commands`）没有可见性字段：`normalizeDefinition` 只接受 `name/description/input/recordInput/handler`，`list(agent)` 返回"该会话可执行"的全集，而 slash 菜单直接渲染这个目录。插件注册的 `/aux-init`、`/aux-end` 因此会出现在**每个** composer 的 "/" 菜单（包括辅助面板自己的）。彻底隐藏需要框架级的 per-agent 命令挂载（把 command-injected 插件挂到该 agent 的 `agent.ctx` 下）。现有兜底保证误触无害：`recordInput:false`（载荷不落盘）、错误目标直接拒绝（`aux-chat/wrong-target`）、名称键空渲染器把命令行从转录中隐藏；两个命令的 description 已收敛为一句"内部指令：…（请勿手动调用）"。
 
+### 4. 文件投放的隔离：文档级 drop 监听 vs 两个 composer（2026-10-14 修复）
+
+**症状（操作者报告）**：往辅助会话里添加文件，文件同时出现在主会话里——"一并共享"。
+
+**根因（实机复现）**：`ui-attachment` 的 `ComposerAttachments`（`conversation.input.attachments` 槽位占用者）为**每个已挂载的 composer** 安装**文档级** drag/drop 监听（`installDocumentDropEvents`，`$PKG/dsh-client-ui-attachment/lib/client.js:534-591`），`onDrop` 里 `if (canAcceptDrop) onAddFiles(files, …)`。官方组合的前提是"**文档内只有一个非 subagent composer**"：嵌入式 subagent 聊天被 `subagent !== null` 排除（`InputBar`: `canAcceptDrop = subagent === null && …`）。本插件挂载的第二个**普通**会话（辅助会话刻意不是 subagent 会话）打破了这个前提——一次投放被两个文档级监听各处理一次，实机抓到的正是两条上传：
+
+```
+POST /api/session/uploadFileBinary?sessionId=<main>  ← 主 composer 的文档级监听
+POST /api/session/uploadFileBinary?sessionId=<aux>   ← 辅助 composer 的文档级监听
+```
+
+**这不是继承层的反流**：v3 的 fork 是单向一次性快照，引擎里没有"子会话回投父会话"的路径；漏的是**共享文档上的事件路由**。也**不是存储层**：DSH 附件是全局内容寻址存储（`<DSH_HOME>/attachments/v1/objects/<sha[0:2]>/<sha>`，本机实测 143 个对象），**没有 per-session 物理分桶**，隔离靠"引用随消息走 + 上传收据按 agent 作用域暂存"——`FileUploads.upload` 把 receipt 放进 `stagedFiles.get(agent.session)` 的 WeakMap，`resolve(agent, receiptId)` 只在接收 agent 作用域内可解析（`assertAgentScope`），跨会话使用会 `FILE_NOT_STAGED`（`$PKG/dsh-client-file-upload/lib/index.js:110-266`）。
+
+**修复（`src/client/drop-router.ts`，零宿主补丁）**：只要挂载了辅助面板，插件就接管文档的**捕获阶段** drag/drop：
+
+1. **目标会话由投放位置决定**——读框架自己的归属属性 `[data-conversation-session]`（`ui-conversation` 的停止快捷键用同一个 `closest()` 查找）；辅助面板 chrome 用 `[data-aux-chat]` + `[data-aux-session]`；落点在所有会话之外则回落主列；落点在 subagent 面板内则改投主列（与官方"文档级监听只喂普通 composer"的语义一致）。
+2. 捕获阶段 `stopImmediatePropagation` 掐断后续全部传播 → 两个 composer 的文档级 intake 都不执行，**一次投放恰好一次处理**。
+3. 用**原** `DataTransfer` 合成一次 `paste` 事件投给目标 composer 自己的 Lexical 编辑器 → 走它自己的 PASTE→`intakeFiles`：官方继续决定"上传 vs `@路径` chip"、图片限额与 toast，**没有复制任何 intake 策略**；`webkitGetAsEntry`（文件夹识别）与桌面 `__DSH_HOST_PATHS__.pathFor`（按 `File` 对象取真实路径）因为沿用同一批 `File` 对象而照常工作。
+4. 拖入辅助面板时用面板自身的虚线高亮（`[data-aux-drag="active"]`）替代官方全屏遮罩：本地面板自己认领这次拖放。
+
+未挂载辅助面板时路由器完全惰性（不 `preventDefault`、不拦截），官方单 composer 行为逐字节不变。
+
+**实机复验（一次性实例 + 真实 bundle，playwright 驱动真实 GUI）**：
+
+| 场景 | 结果 |
+|---|---|
+| 辅助面板内投放 | 仅辅助 composer 出现 chip；1 次上传 → 辅助会话 ✅ |
+| 主列投放（面板挂载中） | 仅主 composer 出现 chip；1 次上传 → 主会话 ✅ |
+| 辅助面板内走「添加文件」菜单 | 仅辅助 chip；1 次上传 → 辅助会话 ✅（回归） |
+| 关闭辅助标签后主列投放 | 官方监听处理；仅主 chip；1 次上传 → 主会话 ✅（惰性） |
+| 拖拽高亮 | 辅助面板内拖拽时 `data-aux-drag=active`，投放后清除 ✅ |
+
+离线门：`npm run drop-check` **36 项**（含 D00 基线：不带路由器时一次投放同时进两个 composer，即本缺陷的离线复刻）；视觉门：`tools/visual/scenarios/drop-isolation.mjs` **12/12**（截图在 `tools/visual/evidence/`）。
+
+**为什么此前 9 轮没抓到**：旧视觉场景 `attachment-isolation.mjs` 只用各 composer 的隐藏 `input[type=file]` 暂存文件（**文件对话框路径**），而这条路径从来不共享——缺陷只存在于**拖放**路径。本轮把拖放路径补成了独立场景。
+
+**残留边界（如实登记）**：
+- 拖拽经过窗口时官方全屏遮罩仍可能叠两层（`pointer-events:none` 的装饰层，不影响落点判定）；
+- 合成 paste 的 `isTrusted=false`：未来若给 intake 加 `isTrusted` 门禁，需要改用真实事件通道（模块文档已登记）；
+- 找不到目标编辑器（会话未就绪、composer 被 block）时不拦截，退回官方行为（可能重现双落点，属降级而非崩溃）。
+
 ## 为什么"临时"是这样实现的
 
 DSH 0.2.0-rc.2 **没有**任何"不落盘会话"开关，也**没有**会话删除 API：
@@ -93,6 +134,8 @@ DSH 0.2.0-rc.2 **没有**任何"不落盘会话"开关，也**没有**会话删�
 | `baseRevision` / 命令 ack | `hostGeneration` / `operationId`（关闭绑定与幂等重试） | ✅ v2 已对齐 |
 | 输入队列 / 待发改道 | 平台 agent FIFO（inbox `next-turn`/`next-step`）+ `prompt(requestId)` 幂等；面板经 `pendingSubmissions` 观察队列并纳入关闭确认 | ✅ 等价（借用官方 composer，无需自建） |
 | 原生角色级历史继承 | **平台不可达**（assistant 恒画 / developer 被剥离 / origin 钉死）——以隐藏 user/message 全量注入逼近 | ⚠️ 极限登记 |
+| 附件存储分桶（ZCode: 会话 ID 内嵌 URI/物理路径） | **平台不同**：DSH 用全局内容寻址存储 + 引用随消息走 + 上传收据按 agent 作用域（`FILE_NOT_STAGED` 跨会话拒绝）——无需 per-session 目录即达成隔离 | ✅ 等价（非分桶实现） |
+| 输入队列路由（命令信封携带 sessionId） | 上传/命令信封都带 `sessionId`（`uploadFileBinary?sessionId=…`、`commands.execute(agentId,…)`）；**拖放**由本插件的捕获路由器按投放位置补齐 | ✅ 本轮补齐 |
 | E11 父归档联动 | 平台不级联非-subagent lineage；面板软提示「主会话已归档：参考历史已冻结」 | ✅ 软提示 |
 
 ## 安装（全局部署到 desktop profile）
@@ -128,7 +171,7 @@ node scripts/build.mjs --half host     # 只打 Node 半侧（需重启 DSH 生�
 
 ## 已验证到什么程度
 
-**当前门（v3，2026-10-14）**：build / smoke / verify 19 / integration 32 / **race-check 43** / **e2e-isolated 54** 全绿；spike（`scripts/spike-fork.mjs`，S1-S9）实证 fork(atSeq:0) 全链、形态 A append 形状（`{surfaceOp:'append'}`，agent-loop L1061 同款）、seed 事件派生 0 条模型消息、`blank=true` 孤儿不可见、selectModel 可用。下表为历史各轮验证明细（部分行属 v1/v2 时代口径）：
+**当前门（v3 + 拖放隔离，2026-10-14）**：build / smoke / verify 19 / integration 32 / **race-check 43** / **drop-check 36** / **e2e-isolated 54** 全绿，另有视觉场景 `drop-isolation.mjs` 12/12（真实 bundle + 真实 GUI）；spike（`scripts/spike-fork.mjs`，S1-S9）实证 fork(atSeq:0) 全链、形态 A append 形状（`{surfaceOp:'append'}`，agent-loop L1061 同款）、seed 事件派生 0 条模型消息、`blank=true` 孤儿不可见、selectModel 可用。下表为历史各轮验证明细（部分行属 v1/v2 时代口径）：
 
 在一个**隔离的 DSH 实例**（独立 `DSH_HOME=/tmp/...`、独立端口，用 desktop profile 的组合复制而成，不触碰你正在运行的应用）上实测通过：
 
@@ -171,9 +214,10 @@ src/contract.ts          冻结的跨半侧接口（常量 + 载荷类型）
 src/index.ts             host 入口：re-export ./host/apply
 src/host/                会话登记表、上下文镜像、创建、四步销毁、启动清扫、命令通道
 src/client/              会话内切换按钮、右栏分栏外壳、多标签、conversation.content 复用、回传、本地 store
+src/client/drop-router.ts 文档级拖放按位置归会话（含合成 paste 重投递与拖拽高亮）
 docs/VERIFIED-API.md     已实证的 DSH API 参考（每条带 文件:行 出处）
 docs/REMOTE-CONTRACT.md  浏览器↔Host 的命令通道契约（Typert 命名空间是生成器产物，第三方插件用 commands 通道）
-scripts/                 build / smoke / verify / integration / install-profile
+scripts/                 build / smoke / verify / integration / install-profile / e2e-isolated / gui-repro
 ```
 
 **入口的分工**（`src/client/panel/Panel.tsx` + `src/client/store.ts`）：
@@ -209,7 +253,10 @@ scripts/                 build / smoke / verify / integration / install-profile
 2. **`conversation.content` 是跨版本的耦合点**：DSH 升级若改 factory 输入形状会破。面板为其缺席准备了 fallback 占位（不白屏）。
 3. **辅助会话在生命周期内可被 `session.search` 搜到**（磁盘上真实存在）。关闭后随删除消失。
 4. **`@` 提及候选**：官方 `sessionReferenceResolver` 不按 `origin` 过滤，辅助会话带 `[辅助]` 标题前缀以便辨认。默认不拦截（需替换官方 Typert 服务，侵入性过高），后续可作为加固项开启。
-5. **自动标题**：~~辅助会话会触发一次首轮标题 LLM 调用~~ **v3 已根治**——fork 通道使子 header 携带 `parentSession`，标题插件的触发条件（`dsh-session-title/lib/index.js:386`）要求 `parentSession === undefined`，且注入消息 `source.kind !== 'user'` 也不满足触发条件（L381），双重抑制；`pinTitle` 仍固定 `[辅助]` 前缀标题供「仅看归档」辨认。
+5. **拖放路由依赖两个 DOM 契约**：归属属性 `[data-conversation-session]` 与本插件自己钉的 `[data-aux-chat]`/`[data-aux-session]`。DSH 若改名，路由器会解析不到目标而不拦截（退回官方双落点），不会崩；已在模块文档登记查询点。
+6. **拖拽遮罩**：面板挂载期间，官方全屏遮罩在拖拽经过窗口时仍可能叠两层（装饰层，`pointer-events:none`），落点判定不受影响。
+7. **文档级 drop 的其他消费者**：本路由器在辅助面板挂载期间独占文档级投放，因此同层的其他消费者收不到文件拖放——目前平台上只有一处：右侧栏用 pdf.js 打开**可编辑** PDF 时的批注粘贴监听（`dsh-client-ui-sidebar-documentpreview/lib/client.pdf.js:3827-3836`，仅编辑态挂载）。此时文件会落到主会话 composer（"带上这个文件"的意图仍在），pdf.js 收不到。若将来该交互变得重要，可改为只拦截祖先带 `[data-conversation-session]`/`[data-aux-chat]` 的投放，代价是恢复主↔辅助反方向泄漏。
+8. **自动标题**：~~辅助会话会触发一次首轮标题 LLM 调用~~ **v3 已根治**——fork 通道使子 header 携带 `parentSession`，标题插件的触发条件（`dsh-session-title/lib/index.js:386`）要求 `parentSession === undefined`，且注入消息 `source.kind !== 'user'` 也不满足触发条件（L381），双重抑制；`pinTitle` 仍固定 `[辅助]` 前缀标题供「仅看归档」辨认。
 
 ## License
 

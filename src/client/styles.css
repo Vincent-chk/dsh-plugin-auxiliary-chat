@@ -445,3 +445,13 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* File-drop target feedback for an auxiliary surface (client/drop-router.ts).
+ * The official composer paints a document-wide drop mask; inside an auxiliary
+ * surface that mask is replaced by this surface-local outline, because the
+ * drop's own position decides which session receives the files. */
+[data-aux-chat][data-aux-drag='active'] {
+  outline: 1.5px dashed var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #4d6bfe));
+  outline-offset: -2px;
+  border-radius: var(--dsw-radius-lg, 12px);
+}
