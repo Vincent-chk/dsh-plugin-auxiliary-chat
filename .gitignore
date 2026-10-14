@@ -2,3 +2,5 @@ node_modules/
 lib/
 .npm-cache/
 package-lock.json
+._*
+.DS_Store

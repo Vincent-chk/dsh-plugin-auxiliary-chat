@@ -23,6 +23,7 @@ import {
   setController,
 } from './panel/Panel.tsx'
 import { EmptyGlyph } from './panel/icons.tsx'
+import { installDropRouter } from './drop-router.ts'
 import { AuxChatController, newSessionId } from './store.ts'
 import { applyModelSelection, endAuxSession, forkAuxSession, initAuxSession, reclaimAuxSession } from './remote.ts'
 import { handoffToMain } from './panel/handoff.ts'
@@ -336,6 +337,28 @@ export function apply(ctx: Context): void {
     setController(controller)
     return () => setController(undefined)
   }, 'aux-chat: controller')
+
+  // File-drop isolation: `ui-attachment` gives EVERY mounted composer a
+  // document-wide drop listener, which is only correct while one composer
+  // exists. The auxiliary panel mounts a second ordinary composer, so this
+  // router attributes each drop to the conversation it landed in and delivers
+  // it there alone. Inert while no auxiliary surface is mounted.
+  ctx.effect(
+    () =>
+      installDropRouter({
+        isSubagentSession: (sessionId) => {
+          try {
+            const binding = client.sessions.binding(sessionId)
+            const session = binding?.session as { getSnapshot?(): { subagent?: unknown } } | undefined
+            const snapshot = session?.getSnapshot?.()
+            return snapshot?.subagent !== undefined && snapshot.subagent !== null
+          } catch {
+            return false
+          }
+        },
+      }),
+    'aux-chat: drop router',
+  )
 
   const disposers: Disposable[] = []
 
