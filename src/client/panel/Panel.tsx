@@ -148,6 +148,60 @@ function EmptyState(props: { text: string; hint?: string }): ReactNode {
   )
 }
 
+/** Human size for the bar (1 decimal above 1k). */
+function sizeText(chars: number): string {
+  return chars >= 1000 ? `${(chars / 1000).toFixed(1)}k` : String(chars)
+}
+
+/**
+ * What the panel may CLAIM about inheritance.
+ *
+ * The bar used to assert "已引用主会话上下文" unconditionally, which was wrong
+ * whenever the injection or its fallback section failed — the operator saw an
+ * empty side chat with a promise of inherited context (2026-10-14). It now
+ * reports the delivered form measured by the Host.
+ */
+function inheritanceStatus(runtime: AuxTabRuntime): { text: string; degraded: boolean; detail: string } {
+  const report = runtime.inherited
+  if (report === undefined) {
+    return { text: '临时会话 · 关闭后无法恢复', degraded: false, detail: '尚未收到主机的继承结果。' }
+  }
+  const size = sizeText(report.chars)
+  if (report.form === 'none') {
+    return {
+      text: '未继承主会话上下文 · 关闭后无法恢复',
+      degraded: true,
+      detail: 'mirrorHistory 已关闭，本次没有把主会话内容交给本会话的模型。',
+    }
+  }
+  if (report.form === 'summary') {
+    if (report.chars === 0) {
+      return {
+        text: '主会话当前没有可继承的已提交记录 · 关闭后无法恢复',
+        degraded: false,
+        detail: '创建这一刻主会话的已提交转录为空（例如新会话、或首轮尚未提交），因此没有内容可继承。',
+      }
+    }
+    return {
+      text: `已继承主会话摘要 · ${size} 字符（超长会话降级，非逐字历史）`,
+      degraded: true,
+      detail: '主会话过长，只有压缩摘要进入本会话的模型上下文（系统提示词 section），不是逐字转录。',
+    }
+  }
+  if (report.truncated) {
+    return {
+      text: `已继承主会话最近 ${String(report.entries)} 条 · ${size} 字符（较早 ${String(report.omitted)} 条超出预算）`,
+      degraded: true,
+      detail: '完整的已提交转录超过 mirrorMaxChars 预算，只注入了最近的连续一段（隐藏 user/message，模型可见、聊天页不显示气泡）。',
+    }
+  }
+  return {
+    text: `已继承主会话上下文 ${String(report.entries)} 条 · ${size} 字符`,
+    degraded: false,
+    detail: '创建瞬间的已提交转录整段注入为一条隐藏 user/message：模型可见，聊天页按设计不显示为气泡。',
+  }
+}
+
 // ── close confirmation (PRD §10 copy) ────────────────────────────────────────
 
 /**
@@ -371,7 +425,26 @@ export function AuxPaneBody(props: FrameworkShares & TabInfoLike & { sessionId?:
     <div className="auxc-pane" data-aux-chat="pane" data-aux-session={auxId ?? ''} ref={attachPaneRef}>
       {runtime.closeState === 'confirming' && <ConfirmInline runtime={runtime} />}
       <div className="auxc-bar">
-        <span className="auxc-bar-context">{t(props, 'contextHint')}</span>
+        {(() => {
+          const status = inheritanceStatus(runtime)
+          const mirrorWarnings = runtime.warnings.filter((line) => /mirror|section|scope|injection/i.test(line))
+          return (
+            <>
+              <span
+                className={status.degraded ? 'auxc-bar-warn' : 'auxc-bar-context'}
+                title={status.detail}
+                data-aux-inherited={runtime.inherited?.form ?? 'unknown'}
+              >
+                {status.text}
+              </span>
+              {mirrorWarnings.length > 0 && (
+                <span className="auxc-bar-warn" title={mirrorWarnings.join('\n')} data-aux-mirror-warnings={mirrorWarnings.length}>
+                  镜像警告 {mirrorWarnings.length} 条
+                </span>
+              )}
+            </>
+          )
+        })()}
         {ctl !== null && ctl.isMainArchived(runtime.mainSessionId) && (
           <span className="auxc-bar-warn" role="status">
             主会话已归档：参考历史已冻结，本辅助会话不会随归档停止。

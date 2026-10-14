@@ -37,14 +37,15 @@ CommandExecution = { commandId, result: { kind:'success', text?, sourceEventSeq?
 
 - **v3 创建通道**：客户端先 `sessions.fork({sessionId: 主会话, atSeq: 0})`——服务端铸造子 id、子 header 持久携带 `parentSession=主会话`（结构性归属）、**空继承**（无可画事件）、自动 attach 父工作区、父日志零写入；再把 `/aux-init` 发到**该子会话自己**（`agentId` = 子 id）。历史兼容：对无 `parentSession` 的普通会话（旧 `sessions.create` 通道）init 仍然可用。
 - `mirrorOf` 必填：主会话 id，**创建当帧捕获、此后冻结**（PRD v2.0 R01）。子 header 带 `parentSession` 时与其不符 → `aux-chat/parent-mismatch` 拒绝（服务端结构校验，不信任浏览器自报；身份类拒绝**不触发**半成品清理）。
-- 成功载荷的 `downgrade` 为三值：`full` = 主会话全量已提交转录已经由隐藏 `user/message`（`source.kind="aux-chat-mirror"`，`{surfaceOp:"append"}`，压缩检查点同款）注入子会话日志；`summary` = 超预算或注入失败，回退系统提示词摘要；`none` = `mirrorHistory:false`。
+- 成功载荷的 `downgrade` 为三值：`full` = 主会话已提交转录已由隐藏 `user/message`（`source.kind="aux-chat-mirror"`，`{surfaceOp:"append"}`，压缩检查点同款）注入子会话日志；`summary` = 注入失败，回退系统提示词摘要；`none` = `mirrorHistory:false`。
+- 成功载荷另带 `inherited`（**实测交付**，面板据此显示，不再靠承诺）：`{ form: 'full'|'summary'|'none', entries, chars, truncated, omitted }`。`form:'full'` 时若父会话长度超过 `mirrorMaxChars`，交付的是**最近连续尾窗**（`truncated:true`，`omitted` = 被排除的较早条目数），此时 `chars ≈ mirrorMaxChars`；只有最新一条都放不下或父会话无可继承记录时才回退 `summary`（`entries/chars` 为摘要的行数/字符数）。
 - `mode:"reclaim"`（PRD v2.0 §7.1）：客户端带着本窗口记录的 tab→child 绑定重连（页面刷新）。Host 侧语义：
   - 已登记 ⇒ 直接返回原 `info` + `reclaimed:true`，**绝不二次创建**；`mirrorOf` 不匹配 ⇒ `aux-chat/reclaim-mismatch` 拒绝。
   - 未登记但 marker 在（插件重载恢复路径）⇒ 走完整重新初始化，返回 `reclaimed:true`。
   - 未登记且无 marker（外来 id / Host 已重启回收）⇒ `aux-chat/session-not-created` 拒绝。
 - `requestId` 可选，仅用于日志关联。
 - Host 侧行为：校验非嵌套、非已初始化（reclaim 除外）→ 构建镜像计划 → 注册 agent 作用域提示词/工具守卫 → 权限/标题/工作区 → 写 marker。
-- 成功：`{ kind:'success', text: JSON.stringify({ ok:true, info: AuxSessionInfo, warnings, downgrade, reclaimed? }) }`
+- 成功：`{ kind:'success', text: JSON.stringify({ ok:true, info: AuxSessionInfo, warnings, downgrade, inherited, reclaimed? }) }`
   - `info.hostGeneration`：本次 Host 启动的代次（`gen-<uuid>`，每次 `apply()` 铸造一次）。客户端随关闭请求回传。
 - 失败：`{ kind:'error', text: '<code>: <原因>' }`；失败后的半成品由 Host 就地清理（reclaim 失败除外——它从未创建任何东西）。
 - `recordInput:false`（避免把 JSON 载荷抄进会话日志）。
@@ -89,7 +90,7 @@ if (!res.ok) throw res.error
 const exec = res.value
 if (exec === undefined) throw new Error('aux-chat command is not registered')
 if (exec.result.kind === 'error') throw new Error(exec.result.text)
-const payload = JSON.parse(exec.result.text ?? '{}')  // { ok, info, warnings, downgrade }
+const payload = JSON.parse(exec.result.text ?? '{}')  // { ok, info, warnings, downgrade, inherited }
 
 // 刷新重连（发给被复接的辅助会话自己；成功即拿到原 child 的 info）
 await ctx.remote.commands.execute(

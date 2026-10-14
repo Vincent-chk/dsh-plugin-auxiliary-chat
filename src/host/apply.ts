@@ -256,6 +256,7 @@ export async function apply(ctx: HostContext, config?: AuxChatConfig): Promise<v
             info: result.info,
             warnings: result.warnings,
             downgrade: result.downgrade,
+            ...(result.inherited === undefined ? {} : { inherited: result.inherited }),
             ...(result.reclaimed === true ? { reclaimed: true } : {}),
           }),
         }

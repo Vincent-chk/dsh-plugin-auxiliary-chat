@@ -61,6 +61,12 @@ export interface AuxCreateOutcome {
   readonly warnings: readonly string[]
   /** `full` = the complete committed transcript was injected (form A). */
   readonly downgrade: 'full' | 'summary' | 'none'
+  /**
+   * What was actually DELIVERED to this session's model context: the transcript
+   * window, the condensed digest, or nothing. The panel states this verbatim —
+   * claiming a mirror that failed is the defect observed on 2026-10-14.
+   */
+  readonly inherited: AuxInheritedReport
   /** Host boot generation that owns the resource (PRD v2.0 §4.2). */
   readonly hostGeneration?: string
   /** Parent model-route snapshot reported by the mirror plan. */
@@ -69,6 +75,15 @@ export interface AuxCreateOutcome {
   readonly reasoningEffort?: string
   /** True when an existing live child was re-attached instead of created. */
   readonly reclaimed?: boolean
+}
+
+/** Delivered-inheritance report (shape frozen by `src/contract.ts`). */
+export interface AuxInheritedReport {
+  readonly form: 'full' | 'summary' | 'none'
+  readonly entries: number
+  readonly chars: number
+  readonly truncated: boolean
+  readonly omitted: number
 }
 
 /**
@@ -106,6 +121,8 @@ export interface AuxTabRuntime {
   message: string | undefined
   warnings: readonly string[]
   downgrade: 'full' | 'summary' | 'none'
+  /** Delivered inheritance of the CURRENT resource (panel-facing truth). */
+  inherited: AuxInheritedReport | undefined
   unread: boolean
   running: boolean
   closeState: CloseState
@@ -333,6 +350,7 @@ export class AuxChatController {
       message: undefined,
       warnings: [],
       downgrade: 'summary',
+      inherited: undefined,
       unread: false,
       running: false,
       closeState: 'idle',
@@ -454,6 +472,7 @@ export class AuxChatController {
     runtime.cwd = outcome.cwd || runtime.cwd
     runtime.warnings = outcome.warnings
     runtime.downgrade = outcome.downgrade
+    runtime.inherited = outcome.inherited
     runtime.hostGeneration = outcome.hostGeneration
     runtime.phase = 'ready'
     runtime.message = undefined

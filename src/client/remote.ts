@@ -58,6 +58,13 @@ interface InitReply {
   } | undefined
   readonly warnings?: readonly string[] | undefined
   readonly downgrade?: 'full' | 'summary' | 'none' | undefined
+  readonly inherited?: {
+    readonly form?: 'full' | 'summary' | 'none'
+    readonly entries?: number
+    readonly chars?: number
+    readonly truncated?: boolean
+    readonly omitted?: number
+  } | undefined
   readonly reclaimed?: boolean | undefined
 }
 
@@ -187,6 +194,13 @@ export async function initAuxSession(
     cwd: reply.info?.cwd ?? '',
     warnings: Array.isArray(reply.warnings) ? reply.warnings : [],
     downgrade: reply.downgrade === 'full' ? 'full' : reply.downgrade === 'none' ? 'none' : 'summary',
+    inherited: {
+      form: reply.inherited?.form === 'full' ? 'full' : reply.inherited?.form === 'none' ? 'none' : 'summary',
+      entries: typeof reply.inherited?.entries === 'number' ? reply.inherited.entries : 0,
+      chars: typeof reply.inherited?.chars === 'number' ? reply.inherited.chars : 0,
+      truncated: reply.inherited?.truncated === true,
+      omitted: typeof reply.inherited?.omitted === 'number' ? reply.inherited.omitted : 0,
+    },
     ...(typeof reply.info?.hostGeneration === 'string' ? { hostGeneration: reply.info.hostGeneration } : {}),
     ...(typeof reply.info?.provider === 'string' ? { provider: reply.info.provider } : {}),
     ...(typeof reply.info?.model === 'string' ? { model: reply.info.model } : {}),

@@ -40,6 +40,23 @@ v3 因此把继承升级为：`fork(atSeq:0)`（**空前缀**，只取 header �
 
 创建链路：`fork` 只读父会话（父日志字节级不变），`/aux-init` 发到辅助会话自身（`command/run`+`command/done` 只落辅助日志、空渲染器隐藏）——R06"父转录零创建日志"在 fork 通道下继续完整达成（e2e 断言父日志不含任何辅助痕迹）。
 
+**【2026-10-14 晚 修正：继承此前其实是"零内容"】** 操作者反馈"辅助会话里看不到主会话的内容"。取证（不是设计文档自证，而是读他那台宿主上正在打开的辅助会话）发现 `/aux-init` 的返回值自曝了两处真实缺陷：
+
+```
+"warnings": ["agent scope could not be minted (cannot get property \"systemPrompt\" without inject); the mirror section is not active"],
+"downgrade": "summary"
+```
+
+1. **镜像 section 从未装上（致命）**：`create.ts` 用插件自己的 ctx 再 `createScope(ctx, agent)` 铸一个新作用域；而 `createScope` 的 fiber 是空插件（`dsh-scope` L286-299），可访问性继承自**插件自己**的 inject 声明——插件没声明 `systemPrompt`，于是 `agentCtx.systemPrompt` 抛 `cannot get property "systemPrompt" without inject`，整个 try 块被吞成一条 warning，section 从未注册（同时被铸出的 scope 也不会被 dispose，属泄漏）。**正确做法是用 agent 自己的作用域**：`dsh-agent-loop` 早就铸好了它（`this.scope = createScope(loopCtx, this); this.ctx = this.scope.ctx`，L778-779），其 static inject 含 `systemPrompt`/`tools`。改为经 `agent.ctx` 注册后，section 与工具守卫随 agent 一起回收，无额外 scope、无泄漏；服务属性读取也改成 try/catch 守卫并如实上报。
+2. **超预算=全丢（设计缺陷）**：`buildFullTranscript` 是全有全无——第一条塞不进预算就 `return undefined` 回退摘要，而摘要 section 又因 (1) 没装上 → **主会话内容一点都没继承**。长会话（操作者的主会话 2.6 MB）必然踩中。现改为**最近连续尾窗**：从最新条目往回累积到预算为止，更早的一律排除（不夹杂空洞），并在注入文本头部写明"较早 N 条未包含"；只有"最新一条都放不下/父会话无可继承记录"才回退摘要。
+3. **面板此前在撒谎**：状态条无条件写"已引用主会话上下文"。现在读主机实测结果 `inherited {form, entries, chars, truncated, omitted}`，如实显示三种状态并用 title 说明语义：
+   - `已继承主会话最近 214 条 · 99.8k 字符（较早 353 条超出预算）`（实机原话）
+   - `已继承主会话摘要 · X 字符（超长会话降级，非逐字历史）`
+   - `主会话当前没有可继承的已提交记录` / `未继承主会话上下文（mirrorHistory 已关闭）`
+   并在存在镜像警告时额外显示「镜像警告 N 条」（title 列出全文）——失败不再静默。
+
+**边界（未变，如实）**：快照=**创建瞬间的已提交前缀**；进行中回合尚未提交的流式内容不在其中（e2e 用 inbox/committed 两种事件形态把这条边界钉住了）。已存在的辅助会话不会被修补——继承是创建时的一次性快照，需关闭重开。
+
 ### 2. 隐藏 = 归档（2026-10-14 第二轮重做：门禁桥接，能力零损失）
 
 官方侧栏的行过滤器（`dsh-client-ui-workspace` 的 `sessionVisible`）只隐藏两类会话：`origin === "subagent"`（会让本面板复用的 composer 被 `session/agent-busy` 冻结，不可用）与 **workspace 归档集**（默认过滤器不显示、搜索同样排除）。因此隐藏走归档集。
@@ -159,7 +176,7 @@ node scripts/build.mjs --half host     # 只打 Node 半侧（需重启 DSH 生�
 
 ## 已验证到什么程度
 
-**当前门（v3 + 拖放隔离，2026-10-14）**：build / smoke / verify 19 / integration 32 / **race-check 43** / **drop-check 36** / **e2e-isolated 55** 全绿，另有视觉场景 `drop-isolation.mjs` 12/12（真实 bundle + 真实 GUI）；spike（`scripts/spike-fork.mjs`，S1-S9）实证 fork(atSeq:0) 全链、形态 A append 形状（`{surfaceOp:'append'}`，agent-loop L1061 同款）、seed 事件派生 0 条模型消息、`blank=true` 孤儿不可见、selectModel 可用。下表为历史各轮验证明细（部分行属 v1/v2 时代口径）：
+**当前门（v3 + 拖放隔离，2026-10-14）**：build / smoke / verify 19 / integration 32 / **race-check 43** / **drop-check 36** / **mirror-check 23** / **e2e-isolated 72** 全绿，另有视觉场景 `drop-isolation.mjs` 12/12 与 `mirror-live.mjs` 4/4（后者把隔离实例指向操作者的真实长会话，实机读出「最近 214 条 · 99.8k 字符，较早 353 条超出预算」）；spike（`scripts/spike-fork.mjs`，S1-S9）实证 fork(atSeq:0) 全链、形态 A append 形状（`{surfaceOp:'append'}`，agent-loop L1061 同款）、seed 事件派生 0 条模型消息、`blank=true` 孤儿不可见、selectModel 可用。下表为历史各轮验证明细（部分行属 v1/v2 时代口径）：
 
 在一个**隔离的 DSH 实例**（独立 `DSH_HOME=/tmp/...`、独立端口，用 desktop profile 的组合复制而成，不触碰你正在运行的应用）上实测通过：
 
@@ -206,6 +223,7 @@ src/client/drop-router.ts 文档级拖放按位置归会话（含合成 paste �
 docs/VERIFIED-API.md     已实证的 DSH API 参考（每条带 文件:行 出处）
 docs/REMOTE-CONTRACT.md  浏览器↔Host 的命令通道契约（Typert 命名空间是生成器产物，第三方插件用 commands 通道）
 scripts/                 build / smoke / verify / integration / install-profile / e2e-isolated / gui-repro
+src/host/__selfcheck__/mirror-window-check.mjs   尾窗预算自检（23 项）
 ```
 
 **入口的分工**（`src/client/panel/Panel.tsx` + `src/client/store.ts`）：
