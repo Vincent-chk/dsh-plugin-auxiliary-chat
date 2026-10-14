@@ -1,0 +1,14 @@
+# This bundle's own loader layer. Applied in `dsh.profile.bundles` order, before
+# the profile's own cordis.patch.yml. A top-level array of patch entries: an
+# `insert:` list appends rows to the profile's root entry list.
+#
+# ONE row per dual-face package. client-modules keys a browser row by PACKAGE
+# NAME and reads that package's `dsh.client` + `exports["./client"]`; the Loader
+# keyed by the same row imports this package's `main` for the Node half. Two rows
+# naming one package make composition fail with
+# "package <name> resolves from multiple active Loader sources" — so this file
+# must keep exactly one row, and the row must name the bare package (never
+# `<name>/client`).
+- insert:
+    - id: aux-chat
+      name: '@dsh-ext/dsh-plugin-auxiliary-chat'

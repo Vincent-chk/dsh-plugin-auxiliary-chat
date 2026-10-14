@@ -1,0 +1,447 @@
+/* ---------------------------------------------------------------------------
+ * Auxiliary-chat right column.
+ *
+ * Only read-only `--dsw-*` theme tokens are consumed. Geometry mirrors the
+ * shipped right-Sidebar occupant: the frame's third grid track is
+ * `minmax(0px, rightbarMax)` and `.rightbarCol` is `{min-width:0; position:
+ * relative; overflow:visible}`, so the occupant pins itself to the column's
+ * right edge and sets its own resolved width. The frame draws the resize
+ * handle; this file must not add one.
+ * ------------------------------------------------------------------------- */
+
+/* ── path A: the frame's right grid item ───────────────────────────────── */
+
+.auxc-column {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  height: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base);
+  border-left: 0.5px solid var(--dsw-alias-border-l3);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* ── path B: a body inside the official right Sidebar's pane ───────────── */
+
+.auxc-pane {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* ── title row ─────────────────────────────────────────────────────────── */
+
+.auxc-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 6px 8px 6px 12px;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l4);
+}
+
+/* macOS desktop keeps its window chrome over the frame's top band. */
+[data-platform='darwin'] .auxc-head {
+  padding-top: calc(28px + var(--dsh-frame-top-clearance, 0px));
+}
+
+.auxc-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+}
+
+.auxc-subtitle {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.auxc-count {
+  flex: none;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-secondary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.auxc-iconbtn {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dsw-radius-sm, 6px);
+  background: none;
+  color: var(--dsw-alias-label-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.auxc-iconbtn:hover {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* ── status line ───────────────────────────────────────────────────────── */
+
+.auxc-status {
+  flex: none;
+  margin: 0;
+  padding: 7px 12px;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l4);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+/* ── body ──────────────────────────────────────────────────────────────── */
+
+.auxc-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.auxc-conv {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* The embedded Conversation fills the body it is given. */
+.auxc-conv > * {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+/*
+ * Pin the composer to the BOTTOM of an empty auxiliary transcript.
+ *
+ * The shipped Conversation puts its composer seat as a `position: sticky` child
+ * of the scrolled transcript container, so with messages in flow the seat rides
+ * the bottom edge. PRD R04 forbids the blank-session brand hero here (no
+ * inherited bubbles, no workspace picker), which leaves the transcript with
+ * ZERO nodes — measured: the scroll port was 925px tall while the composer seat
+ * sat at its very top (y == scroll top), so the pane rendered composer-first
+ * over a large empty area.
+ *
+ * Both selectors use the shipped `data-*` DOM contract rather than hashed class
+ * names, and are scoped to this plugin's own containers so no other surface is
+ * affected. `margin-top: auto` is a no-op once the transcript is taller than
+ * the port, so a real conversation is unaffected.
+ */
+[data-aux-chat] [data-conversation-scroll] {
+  display: flex;
+  flex-direction: column;
+}
+
+[data-aux-chat] [data-composer-seat] {
+  margin-top: auto;
+}
+
+.auxc-empty {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 28px 20px;
+  text-align: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.auxc-empty-glyph {
+  color: var(--dsw-alias-label-caption, var(--dsw-alias-label-tertiary));
+  margin-bottom: 4px;
+}
+
+.auxc-empty-text {
+  margin: 0;
+  max-width: 32em;
+}
+
+.auxc-empty-hint {
+  margin: 0;
+  max-width: 32em;
+  color: var(--dsw-alias-label-caption, var(--dsw-alias-label-tertiary));
+  font-size: 12px;
+}
+
+.auxc-placeholder {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 28px 20px;
+  text-align: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.auxc-placeholder-title {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.auxc-placeholder-body {
+  margin: 0;
+  max-width: 34em;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* ── Path B: the host tab's own page ───────────────────────────────────── */
+
+/* The host chip's text; the host owns the chip's box. */
+.auxc-tabtitle {
+  display: contents;
+}
+
+/* One thin row: mirror warnings plus the handoff action. Rendered only once
+   the session exists, so it never leaves an empty strip above the chat. */
+.auxc-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 3px 8px 3px 12px;
+  border-bottom: 0.5px solid var(--dsw-alias-border-l4);
+}
+
+.auxc-bar-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
+.auxc-bar-action {
+  flex: none;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-sm, 6px);
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.auxc-bar-action:hover {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* Creating: a quiet placeholder instead of a dead white page. */
+.auxc-wait {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 20px;
+  text-align: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* Failure: reason and retry together — a failure must never be a dead end. */
+.auxc-fail {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 28px 24px;
+  text-align: center;
+}
+
+.auxc-fail-text {
+  margin: 0;
+  max-width: 34em;
+  color: var(--dsw-alias-label-secondary);
+  overflow-wrap: anywhere;
+}
+
+.auxc-retry {
+  flex: none;
+  height: 28px;
+  padding: 0 14px;
+  border: 0.5px solid var(--dsw-alias-border-l3);
+  border-radius: var(--dsw-radius-md, 10px);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.auxc-retry:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.auxc-bar-action:focus-visible,
+.auxc-retry:focus-visible {
+  outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 1px;
+}
+
+/* ── conversation-header toggle ────────────────────────────────────────── */
+
+.auxc-toggle {
+  position: relative;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--dsw-radius-sm, 6px);
+  background: none;
+  color: var(--dsw-alias-label-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.auxc-toggle:hover {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.auxc-toggle-on {
+  color: var(--dsw-alias-label-primary);
+}
+
+/* Live background sessions while the column is collapsed. */
+.auxc-toggle-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dsw-alias-state-business-primary, currentColor);
+}
+
+/* Inline close confirmation (replaces the former modal): one slim bar at the
+   pane top — the guard rail stays, the interruption does not. */
+.auxc-confirm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+  border-bottom: 0.5px solid var(--dsw-alias-border-l3);
+}
+
+.auxc-confirm-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.auxc-confirm-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.auxc-confirm-cancel,
+.auxc-confirm-destroy {
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  border-radius: var(--dsw-radius-sm);
+  padding: 3px 10px;
+  cursor: pointer;
+  border: none;
+}
+
+.auxc-confirm-cancel {
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+}
+
+.auxc-confirm-cancel:hover {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+
+.auxc-confirm-destroy {
+  color: var(--dsw-alias-state-error-primary, #e5484d);
+  background: transparent;
+  border: 0.5px solid var(--dsw-alias-state-error-primary, #e5484d);
+}
+
+.auxc-confirm-destroy:hover:not(:disabled) {
+  background: var(--dsw-alias-state-error-primary, #e5484d);
+  color: #fff;
+}
+
+.auxc-confirm-destroy:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

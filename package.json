@@ -1,0 +1,61 @@
+{
+  "name": "@dsh-ext/dsh-plugin-auxiliary-chat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sidebar auxiliary chat for DeepSeek Harness: a global panel entry beside the workspace-files and new-terminal rows, hosting temporary auxiliary sessions that mirror the main session's context one way and are permanently deleted when closed.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.d.ts",
+    "cordis.patch.yml"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "~18.3.1",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:host": "node scripts/build.mjs --half host",
+    "build:client": "node scripts/build.mjs --half client",
+    "smoke": "node scripts/smoke.mjs",
+    "verify": "node scripts/verify.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "race-check": "node --experimental-transform-types src/client/__selfcheck__/race-check.mjs"
+  }
+}

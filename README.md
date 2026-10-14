@@ -1,0 +1,196 @@
+# @dsh-ext/dsh-plugin-auxiliary-chat
+
+DeepSeek Harness 的**辅助会话**插件：在**当前会话窗口内**、会话头部的按钮打开一个右栏分栏面板（ChatGPT 式：主对话在左、辅助会话在右，同时可见、不覆盖整屏），里面是一组**临时辅助会话**。
+
+## 它是什么
+
+| 维度 | 行为 |
+|---|---|
+| 入口 | **会话头部右侧按钮**（`conversation.session.header.utilities`，order 20）。不在左栏、不切换主区 |
+| 形态 | **框架的右列 `rightbar`**：中栏按轨道宽度自动让位，与主对话并排；收起即隐藏 |
+| 会话身份 | 每次新建生成一个**独立的普通 DSH 会话**（不是 subagent、不是 fork 到会话列表） |
+| 上下文继承 | **单向镜像，且只走系统提示词**：新建时把主会话的最近对话摘要（12 条 / 每条 700 字 / 总 6000 字上限）、渲染后的系统提示词、动态上下文快照、模型与权限预设、goal/todo/cwd 组装进一条 `aux-chat-mirror` 提示词 section。**刻意不 seed**——见下 |
+| 聊天页 | **全新空白**：辅助会话从空会话开始，聊天记录里没有任何主会话内容（这是"不 seed"的直接结果） |
+| 主会话可见性 | 主会话**完全看不到**辅助会话的任何痕迹：创建是两阶段——先经 `sessions.create` 建空会话，再把 `/aux-init` 发到**辅助会话自身**（命令生命周期只落在辅助会话的日志里，且由空渲染器隐藏）。主转录零命令行、零创建日志（PRD R06） |
+| 侧边栏可见性 | **默认隐藏**（归档集：默认过滤器与搜索都不显示；「仅看归档」下仍可见、回合运行期间行短暂可见）。`Config.hideFromSidebar:false` 可回到可见 |
+| 配置 | 创建时快照主会话的模型与权限预设，之后可在辅助面板内**独立修改** |
+| 能力 | 与主会话一致：完整工具能力，工作目录与主会话相同；产出的工作区文件**保留** |
+| 打开方式 | 右栏 guide 胶囊 = 打开/聚焦已有辅助会话，没有则创建第一条；重复打开幂等（PRD R01/B06） |
+| 多会话 | tab 菜单「新建辅助会话」再开一条；标签按 `辅助会话 2 / 3` 编号；收起、切标签、切主会话都只隐藏不销毁 |
+| 关闭确认 | 关闭**有内容、正在回复或有待发队列**的标签时弹出内联确认条（空+闲置直接关）。确认文案**绑定捕获来源**：「关闭『主会话A 的 辅助会话』？」——切到 B 后再确认也不改写目标（PRD v2.0 T01/V10） |
+| 未读 / 运行 | chip 显示运行 spinner；后台回复完成标记未读，实际可见并聚焦后清除（PRD R07/R18） |
+| 快捷入口 | 桌面 `⌘⌥S`（Win/Linux `Ctrl+Alt+S`）；主输入框 `/side` 命令。辅助会话内 `/side` 被拒绝（不可嵌套，PRD R13/T41） |
+| 回传 | 「复制结论到主会话」只把文本插入主会话输入框为草稿，用户确认后才发送（严格单向） |
+| 生命周期 | 资源状态机 `creating / ready / closing / closeFailed / closed / ended`；只有**标签自身的关闭动作**会销毁；销毁 = 取消回合 → `dispose()` → 删会话日志目录 → 删投影缓存行 → 删标记文件。刷新重连见下（PRD v2.0 §7） |
+
+## 三个平台约束（决定了本插件的关键取舍）
+
+### 1. 继承不能有可见的历史 ⇒ 刻意不 seed
+
+平台其实**存在 fork 接缝**（客户端 `sessions.fork({sessionId, atSeq})`、host 侧 `session/end-seed`），但 fork 出的继承段会进入子会话日志并发给浏览器；要让它不画成气泡，需要客户端按 `inheritedEventCount` 截断视图，而该字段在当前会话内容工厂的渲染路径里没有被消费。所以一旦用 seed 承载主会话历史，它仍会被画成气泡——这正是用户投诉的"内容重复显示"。
+
+平台稳定的"模型能看、transcript 不画"通道是系统提示词（`isVisibleChatNode()` 明确排除 system prompt / context / 权限命令）。因此上下文继承**只走提示词**，`seed` 不用，聊天页 100% 干净。
+
+配合**两阶段创建**（先 `sessions.create` 建空会话，再把 `/aux-init` 发到辅助会话自身），命令的 `command/run`+`command/done` 只落在辅助会话日志里（由空 `commandview` 渲染器隐藏），主会话转录连命令行都没有——R06 的"父转录零创建日志"完整达成。
+
+### 2. 隐藏 = 归档（2026-10-14 第二轮重做：门禁桥接，能力零损失）
+
+官方侧栏的行过滤器（`dsh-client-ui-workspace` 的 `sessionVisible`）只隐藏两类会话：`origin === "subagent"`（会让本面板复用的 composer 被 `session/agent-busy` 冻结，不可用）与 **workspace 归档集**（默认过滤器不显示、搜索同样排除）。因此隐藏走归档集。
+
+第一轮实现（今日早些时候）因 `ArchivedSessionGate` 而翻车：归档会话的 `agent/pre-step` 被 `{kind:'reject'}` 拦截，回合直接 `blocked`；当时的绕法（自己应答 step、不调 `next()`）会**否决整条瀑布**，丢掉运行期上下文快照与另外 17 项注入，因此默认关闭。
+
+**现行机制（`src/host/hide.ts`，默认开启）**：门禁每次 step **实时重读** `workspaceRegistry.archivedSessionIds`，且由更早的 bundle 注册——所以本插件用 `prepend:true` 抢在它前面：
+1. `agent/pre-step` 上对本插件 `owned` 的会话先 `await unarchiveSession(id)` 再 `next()`；
+2. 门禁在 `next()` 内读到集合已无该 id → 放行，**其余 17 个监听器与 base 决策（运行期上下文）全部照常贡献**；
+3. `agent/status` 回 `idle` 时重新归档（行再次消失）。回合进行期间行可见是本通道的固有边界。
+
+销毁路径维持"日志先删 + 台账下次启动反归档"，垂死行不闪现。启动时 marker 清扫改为在 `apply` 内**被等待**——客户端首个列表加载前必完成，杜绝"清扫晚于列表加载"造成的滞留行（2026-10-14 13:54 重启后操作者看到的残留行的机制）。
+
+**残留边界（如实）**：「仅看归档」过滤器下仍可见；回合运行期间行短暂可见。若宿主未来开放行隐藏插槽，可切换为原生通道。
+
+### 3. 内部命令在 "/" 菜单可见 ⇒ 三层兜底 + 降噪
+
+Host 命令目录（`dsh-commands`）没有可见性字段：`normalizeDefinition` 只接受 `name/description/input/recordInput/handler`，`list(agent)` 返回"该会话可执行"的全集，而 slash 菜单直接渲染这个目录。插件注册的 `/aux-init`、`/aux-end` 因此会出现在**每个** composer 的 "/" 菜单（包括辅助面板自己的）。彻底隐藏需要框架级的 per-agent 命令挂载（把 command-injected 插件挂到该 agent 的 `agent.ctx` 下）。现有兜底保证误触无害：`recordInput:false`（载荷不落盘）、错误目标直接拒绝（`aux-chat/wrong-target`）、名称键空渲染器把命令行从转录中隐藏；两个命令的 description 已收敛为一句"内部指令：…（请勿手动调用）"。
+
+## 为什么"临时"是这样实现的
+
+DSH 0.2.0-rc.2 **没有**任何"不落盘会话"开关，也**没有**会话删除 API：
+
+- `ctx.agents.create()` 只要组合里挂了 `sessionPersistence` 就无条件落盘（`dsh-agent-loop/lib/index.js:1818-1827`）；
+- `SessionPersistence` 只有 `create/open/flush/stat/list`（`dsh-session-persistence/lib/types/index.d.ts:110-157`），`SessionController` 全方法表无 delete。
+
+因此本插件用**四步手工销毁**（见 `src/host/dispose.ts`）逼近"永久删去"，并在启动时清扫崩溃残留的标记文件。会话存在的这段时间里磁盘上确实有一个 jsonl 文件——这是平台约束下能做到的最接近语义。
+
+## 关闭协议与生命周期（PRD v2.0 结构修订）
+
+本节是 2026-10-14 修订 PRD v2.0 的核心落地：**A 打开 a、切到 B 之后，a 仍属于 A；关闭永远作用于捕获的原资源与原标签实例，绝不误伤 b**。
+
+**身份捕获（R01–R04）**：pane 挂载当帧把 `mainSessionId`、`tabKey`（tab 的 contentId）、`AbortSignal`（occurrence）一起冻结进 runtime；此后所有异步回调都要过"世代守卫"——`isCurrent(runtime, epoch)` 用对象身份 + 创建代次双重校验，tab 关闭后同 id 重开的新实例不会被旧回调污染（T05）。
+
+**关闭准入（§6.3/§6.4）**：全部入口（标题 X、菜单、替换、快捷关闭）都过宿主 `registerCloseHandler`；需要确认时同步抛 `CloseVetoError` 保住标签（一次性 `bypassNextClose` 令牌只作用于原 occurrence）。确认文案读的是**按 id 绑定**的主会话标题，不是"当前屏幕上是谁"。
+
+**关闭执行**：确认后同步翻 `closing`（<100ms 反馈）→ 以捕获的 `childSessionId + hostGeneration + operationId` 调 `/aux-end` → Host 完成后才 `closeIn(A, tabId)` 移除标签。30s 看门狗超时进 `closeFailed`（保留标签、记录确切目标、"重试关闭"**复用同一 operationId**）；`not-registered / stale-generation` 归类为已收敛。10 次连点只有一次逻辑清理（T14）。
+
+**Host 代次（T12）**：host 每次 `apply()` 铸 `gen-<uuid>`，随创建结果下发；关闭请求回传，不匹配即 `aux-chat/stale-generation` 拒绝且什么都不动——越过 Host 重启的旧请求不能作用于同 id 下的任何新资源。
+
+**刷新重连（§7.1 / E12 / T16）**：pane ready 时把 `tabKey → {sessionId, mirrorOf, hostGeneration}` 记入 localStorage，键含**窗口 owner**（sessionStorage，刷新保留、第二窗口隔离）。刷新后同 tab 重挂 → 先 `/aux-init mode:"reclaim"` 复接原 child（绝不二次 fork）；Host 侧凭 registry/marker 验证归属、拒绝改绑父会话与外来 id。复接被拒（Host 已重启回收）→ 面板显示"辅助会话已结束" + 显式「新建辅助会话」（新资源代次，不复活）。**未实现**：120s 失联宽限的自动到期回收——无日志污染的存活信号接缝（§15.3-4 已登记为开放项）；当前由 Host 重启清扫兜底。
+
+**离线验证**：`npm run race-check`（43 项，驱动真实 controller：C01–C12 覆盖 R01/T01/T04/T05/T14/E06/E07/E12/T16/T12/§6.3 看门狗与幂等）；`scripts/e2e-isolated.mjs` 35 项（真实栈：代次下发、reclaim 三分支、stale-generation 拒绝且资源未动、operationId 回显）。
+
+## 安装（全局部署到 desktop profile）
+
+```bash
+node scripts/build.mjs                                  # 构建两个半侧
+node scripts/smoke.mjs && node scripts/verify.mjs        # 契约与产物检查
+node scripts/integration.mjs                             # 跨半侧一致性
+node scripts/install-profile.mjs                         # 干跑，只打印不改动
+node scripts/install-profile.mjs --apply --no-pnpm       # 备份 + 写 manifest + 目录链接
+```
+
+`--no-pnpm` 让安装器**只**建一个指向本仓库的目录链接（`profile/node_modules/@dsh-ext/…`），与你 profile 里
+249 个 `@deepseek-ai` 链接完全同构，因此不需要跑 `pnpm install`、不改 lockfile、不会重解析其它依赖。
+想走官方安装语义就去掉 `--no-pnpm`（安装器会打印 pnpm 命令，或用 `--pnpm` 直接执行）。
+
+装好后**重启 DeepSeek Harness**（Loader 在组合期读取 `dsh.profile.bundles`），再刷新页面。
+
+卸载：`node scripts/install-profile.mjs --uninstall --apply --no-pnpm`（会自动删掉那个链接）。
+
+> desktop profile 无法用 `dsh plugin --profile desktop add` 安装（CLI 硬拒：profile 由 Electron 载体专属管理）。本脚本做的是同一件事：写 `dependencies` + `dsh.profile.bundles`。
+
+## 开发循环
+
+```bash
+node scripts/build.mjs --half client   # 只打浏览器半侧
+# → ≤500 ms 后浏览器自动热更（dsh-client-hmr 轮询 lib/client.js 的 mtime/ctime/size）
+node scripts/build.mjs --half host     # 只打 Node 半侧（需重启 DSH 生效）
+```
+
+- 改 `dsh.client` 声明 / 包名 / `exports["./client"]` → **必须刷新页面**。
+- 两个半侧可独立构建，因此可以并行开发（见下）。
+
+## 已验证到什么程度
+
+在一个**隔离的 DSH 实例**（独立 `DSH_HOME=/tmp/...`、独立端口，用 desktop profile 的组合复制而成，不触碰你正在运行的应用）上实测通过：
+
+| 验证项 | 结果 |
+|---|---|
+| 插件 host 行进入 Loader 组合树 | `--dump-config` 末尾出现 `- id: aux-chat / name: '@dsh-ext/dsh-plugin-auxiliary-chat'` |
+| host fiber 真实激活 | `pluginInventory/list` 返回 `{entryId:"include:aux-chat", enabled:true, fiberPhase:"active"}`，全实例 158 active / 0 failed |
+| 浏览器启动图包含插件行 | 66 行中第 56 位，`rev=237bb5c0e7c8`，`inject` 的 3 个动态包均排在其之前 |
+| bundle 路由 | `GET /plugins/??<pkg>/client.js&rev=…` → 200，与磁盘 `lib/client.js` 逐字节一致；错误 rev → 404 |
+| `/aux-chat` 真实创建 | 成功，返回 `mirrorOf`/`cwd`/`provider=deepseek-official`/`model=deepseek-flash`/`permissionPreset=workspace-write`（模型与权限确实从主会话快照继承） |
+| 落盘产物位置 | `<DSH_HOME>/sessions/<projectKey>/<sessionId>/session.v4.jsonl.zstd` + `session.lock`、`<DSH_HOME>/storages/session_projcache/sessions/<id>.json`、`<DSH_HOME>/aux-chat/sessions/<id>.json` 三处齐全 |
+| 四步销毁 | `/aux-end` 返回 `{logRemoved:true, cacheRemoved:true, markerRemoved:true}`，三处产物全部消失 |
+| **主会话隔离** | 解压主会话日志：只有 header 一条记录，**不含**辅助会话 id、不含创建载荷（`recordInput:false` 生效）；主会话日志目录完好无损 |
+| **附件会话隔离** | `tools/visual/scenarios/attachment-isolation.mjs` 9 项断言全绿：主会话 staged 的文件/草稿不出现在辅助面板（双向），面板根节点 `data-aux-session` 钉住辅助会话 id（`session-<uuid>`），截图在 `tools/visual/evidence/` |
+| **面板几何（composer 在底部）** | `tools/visual/scenarios/pane-layout.mjs` 7 项断言全绿：composer 底边与面板底边 gap=0、上方留足转录空间、真实回合后仍成立 |
+| 幂等性 | 重复销毁返回 `not-registered` 且**不触碰任何文件**；用外来 id（真实主会话）销毁同样被拒 |
+| 拒绝路径 | `mirrorOf` 不存在 → `aux-chat/mirror-missing`；路径穿越 id → 被 `^session-[0-9A-Za-z][0-9A-Za-z-]{0,119}$` 拒绝；辅助会话嵌套 → `aux-chat/nested-aux` |
+| 未知命令 | 返回 `undefined`（客户端降级为状态行提示，不崩） |
+| 重构后的加载与生命周期 | `scripts/e2e-isolated.mjs` 20 项全绿：host fiber `active`、0 failed、bundle 逐字节一致、`/aux-chat` → `/aux-end` 全链路、标记清除 |
+| 与官方右侧栏共存 | `scripts/e2e-isolated.mjs --with-official-rightbar` 22 项全绿：官方列在场时插件仍激活且不遮蔽它 |
+| **聊天页干净** | `src/host/__selfcheck__/e2e-probe.mjs --prompt`：辅助会话可见载荷里**继承记录 = 0、可画气泡行 = 0**，整页只剩 4 条不画行的 log-only 记录（permission/preset、sandbox/mode、approval/policy、session/title） |
+| **镜像确实到模型** | 同一探针：辅助会话自己的 `system/message` **携带 `aux-chat-mirror` section**，摘要块与"这是摘要不是原文"自述都在渲染后的提示词里（15309 字符，identity@0、mirror@114） |
+| Path B 会话生命周期 | 自检 28 条断言（迷你 hook 运行时驱动真实组件）：挂载即创建、同一 tab 重挂复用、会话切换不重复创建、关 tab → `/aux-end` + release、创建失败显示原因与重试、多 tab 各自独立、无会话时说明而非空转 |
+| 交付形态（e2e 断言） | 启动图含宿主右侧栏 → Path B 生效；产物注册 `sidebar.right.pane.tab` + `title`、读取 `useTabInfo`、且**不含**内层标签栏 |
+| **归档+短路在开关打开时** | 探针 `--hide`：归档集合写入成功；我们自己的已归档辅助会话 `step/start = 1` 且走到真实 provider 边界；**对照组的"非本插件 + 已归档"会话仍 `blocked`、`step/start = 0`**（没有弄坏别人的归档会话） |
+
+复现：`node scripts/e2e-isolated.mjs [--port 19520] [--with-official-rightbar]`（自建一次性 `DSH_HOME` 与私有端口，跑完自动清理，不碰你正在运行的应用）。
+
+尚未端到端证实：**带真实模型回复**的完整回合。隔离实例没有 API key，回合停在 provider 边界（`MISSING_CREDENTIAL`），所以"归档+短路后能跑完一整轮"只有机制证据（`step/start`、`system/message`、`request/header` 都产生了）。默认路径（不隐藏）不受此影响。
+
+尚未真机验证：**Path B 在真实浏览器里的表现**。离线 harness 用迷你 hook 运行时驱动真实组件，但"宿主是否真的把 `useTabInfo`/session 作用域交给这个 pane body"、"guide 胶囊点击是否真的开 tab"，只有官方源码契约交叉核对，没有真机点击。请在实机确认三点：①右栏 guide 里点「辅助会话」→ 直接进入可用对话（不再出现空面板）；②关掉该 tab → 会话被永久删除；③开两个 tab → 各自的会话独立、chip 标题可区分。
+
+**教训记录**：本插件曾有连续几轮按 Path A 设计与验证，而实机一直是 Path B，导致"面板永远空状态、没有任何对话入口"。根因是我把"profile 的 `dsh.profile.bundles` 里没有 sidebar-right"误当成"它没被挂载"——实际上它来自 **bundle 的 patch 层**。现在 `scripts/e2e-isolated.mjs` 会断言启动图里存在该行并检查 Path B 的产物标记。
+若顶部留白偏大，改 `src/client/styles.css` 里 `[data-platform='darwin'] .auxc-head` 一行即可。
+
+## 架构
+
+```
+src/contract.ts          冻结的跨半侧接口（常量 + 载荷类型）
+src/index.ts             host 入口：re-export ./host/apply
+src/host/                会话登记表、上下文镜像、创建、四步销毁、启动清扫、命令通道
+src/client/              会话内切换按钮、右栏分栏外壳、多标签、conversation.content 复用、回传、本地 store
+docs/VERIFIED-API.md     已实证的 DSH API 参考（每条带 文件:行 出处）
+docs/REMOTE-CONTRACT.md  浏览器↔Host 的命令通道契约（Typert 命名空间是生成器产物，第三方插件用 commands 通道）
+scripts/                 build / smoke / verify / integration / install-profile
+```
+
+**入口的分工**（`src/client/panel/Panel.tsx` + `src/client/store.ts`）：
+
+| 路径 | 新建入口 | 销毁入口 |
+|---|---|---|
+| Path B（实机） | 宿主右栏 guide 页的「辅助会话」胶囊，或宿主 tab 栏的 `+`——**打开一个 tab 就自动创建它自己的辅助会话** | 关闭该宿主 tab |
+| Path A（回退） | 会话头部切换按钮（打开并聚焦/自动创建） | 面板头部 `×` 结束会话 |
+
+**面板内部没有任何新建控件**（用户明确要求："顶栏已有新建功能，面板内再加一个是重复的"）。Path B 里宿主 tab 本身就是"辅助会话窗口"，所以不再有内层标签栏；Path A 一次显示一个会话。两条路径的自检都有反向断言：面板内不得出现 `+`、无 `新建` 字样、无 `.auxc-tabs`。
+
+**本机实际走 Path B（重要）**：`@deepseek-ai/dsh-client-ui-sidebar-right` 由 `dsh-web-app` 的 bundle patch **无条件挂载**（`$PKG/dsh-web-app/cordis.patch.yml:265-266`，无 disabled 门），desktop profile 包含 web-app —— 所以实机启动图里始终有它（`scripts/e2e-isolated.mjs` 现在会断言这一点，并把 Path B 的产物标记一并检查）。**Path A 只在有人显式禁用该 bundle 时才可能出现。**
+
+| | Path B（实机形态） | Path A（回退） |
+|---|---|---|
+| 形态 | 宿主机右侧栏里的一个 tab 类型 | 占用框架 `rightbar` 右列 |
+| 一个"辅助会话"= | **一个宿主 tab** | 当前主会话的那一个 |
+| 新建入口 | guide 页的「辅助会话」胶囊 / 宿主 tab 栏的 `+` | 会话头部切换按钮 |
+| 挂载即创建 | 是（`AuxPaneBody` 挂载时创建该 tab 的会话） | 是（toggle 打开时创建） |
+| 关闭即销毁 | 关宿主 tab → `tab.signal` abort → 销毁 | `.auxc-head` 的 × → 销毁 |
+| 面板内标签栏 | **无**（宿主 tab 就是标签） | **无** |
+
+**与官方右侧栏共存**：
+本插件启动时用 `ctx.get('sidebarRightTabs')` 探测：**不存在** → 占用 `rightbar` 并注册会话头按钮（Path A，本机形态）；
+**存在** → 不占 `rightbar`（避免遮蔽官方列），改走官方两阶段 tab 注册（Path B），并因为官方列自带 corner 展开控件而不再重复注册按钮；
+官方包若在本插件之后加载，`ctx.inject` 的 latch 会拆掉 Path A 并切换过去。两条时间线都已验证（见下）。
+
+**UI 复用**：DSH 唯一的官方可复用会话 UI 通道是 `conversation.content` Component Factory（"Reusable Conversation content instantiated by presentation hosts"）。面板用 `ctx.sessions.retain(sessionId)` 拿到 `SessionReference`，再用 `<SessionProvider session={ref}>` 显式绑定**任意**会话，于是消息流、composer（发送/停止/排队/附件/`@`）、模型与权限选择器、审批与用户提问接管全部免费获得。
+
+## 已知边界与风险
+
+1. **删除依赖文件系统路径推断**：优先用 jsonl 后端的 `resolveCurrentLog(id)`，路径拼接仅兜底。DSH 若改变磁盘布局，销毁会降级为"只 dispose、不删文件"，并在日志留痕。
+2. **`conversation.content` 是跨版本的耦合点**：DSH 升级若改 factory 输入形状会破。面板为其缺席准备了 fallback 占位（不白屏）。
+3. **辅助会话在生命周期内可被 `session.search` 搜到**（磁盘上真实存在）。关闭后随删除消失。
+4. **`@` 提及候选**：官方 `sessionReferenceResolver` 不按 `origin` 过滤，辅助会话带 `[辅助]` 标题前缀以便辨认。默认不拦截（需替换官方 Typert 服务，侵入性过高），后续可作为加固项开启。
+5. **自动标题**：辅助会话不带 `parentSession`，因此会触发一次首轮标题 LLM 调用（官方行为，`dsh-session-title/lib/index.js:386`）。
+
+## License
+
+MIT
