@@ -323,7 +323,19 @@ try {
     },
   }, cookie)
   check(promptedMain?.result?.ok === true, 'main session accepted the probe prompt')
-  await new Promise((resolve) => setTimeout(resolve, 2500))
+  // Wait for the FACT to be committed rather than sleeping a fixed interval: the
+  // injection is built from the parent's committed prefix, so under load a fixed
+  // sleep can fork before the probe message lands (observed flake, 2026-10-14).
+  const waitForParentFact = async (needle, timeoutMs = 25_000) => {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      const path = findLogPath(home, 'session-e2e-main-0001')
+      if (path !== '' && readLogText(path).includes(needle)) return true
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    return false
+  }
+  check(await waitForParentFact('ZEBRA-42'), 'the parent probe fact is committed before the fork (D1 precondition)')
   const forkRes = await rpc('session/fork', { request: { sessionId: 'session-e2e-main-0001', atSeq: 0 } }, cookie)
   const forkChild = forkRes?.result?.value?.sessionId
   check(typeof forkChild === 'string' && forkChild.startsWith('session-'), `fork(atSeq:0) returned a server-minted child (${String(forkChild)})`)
