@@ -41,8 +41,25 @@ export interface AuxCreateResult {
    * if it were the full reference history.
    */
   readonly downgrade: 'full' | 'summary' | 'none'
+  /**
+   * What was ACTUALLY delivered (transcript window / digest / nothing), so the
+   * panel can state the truth instead of claiming a mirror that failed.
+   */
+  readonly inherited?: AuxInheritedReport
   /** True when an already-registered live session was re-attached (reclaim). */
   readonly reclaimed?: boolean
+}
+
+/**
+ * Delivered-inheritance report (frozen shape, mirror of the contract type).
+ * Host types are hand-written here so the two halves stay independent.
+ */
+export interface AuxInheritedReport {
+  readonly form: 'full' | 'summary' | 'none'
+  readonly entries: number
+  readonly chars: number
+  readonly truncated: boolean
+  readonly omitted: number
 }
 
 /** A minted agent scope (the `createScope` return, structurally typed). */
@@ -166,6 +183,15 @@ export interface HostAgent {
   readonly id: string
   readonly options?: HostAgentOptions
   readonly session: HostSession
+  /**
+   * The agent's OWN scoped Cordis context (`Agent.ctx` = `Agent.scope.ctx`,
+   * minted by `dsh-agent-loop` with `systemPrompt`/`tools` injected). Prompt
+   * sections and the tool guard must be registered through THIS context: the
+   * plugin's own fiber does not declare those services, and a second
+   * `createScope(ctx, agent)` from the plugin's ctx throws
+   * `cannot get property "systemPrompt" without inject`.
+   */
+  readonly ctx?: unknown
   /** Whether a turn is currently running (Agent.status; 'idle' | 'running'). */
   readonly status?: 'idle' | 'running'
   /** Cancel the active turn (Agent.cancel). */

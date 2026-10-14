@@ -149,12 +149,15 @@ export interface MirrorPlan {
    */
   readonly fallbackSection: MirrorPromptSection
   /**
-   * Form-A payload: the frozen full committed transcript of the main session,
+   * Form-A payload: the frozen committed transcript of the main session,
    * rendered for one hidden `user/message`. `undefined` when history mirroring
-   * is off, the parent has no eligible events, or the rendering exceeded the
-   * budget (the caller then uses {@link fallbackSection}).
+   * is off, the parent has no eligible events, or even its newest entry does
+   * not fit the budget (the caller then uses {@link fallbackSection}).
+   *
+   * A long parent yields a TRUNCATED window (newest tail) rather than nothing:
+   * {@link TranscriptWindow.truncated} and `.omitted` carry that accounting.
    */
-  readonly injection: string | undefined
+  readonly injection: TranscriptWindow | undefined
   /** `session/title` text to pin on the auxiliary session. */
   readonly title: string
   /** Sizes of the delivered conversation summary, for the report and diagnostics. */
@@ -347,21 +350,31 @@ function buildHistoryDigest(session: HostSession, trace: (event: string) => void
  * - `assistant/message` (reasoning dropped, tool calls condensed).
  * - `tool/result` (condensed hard — results are the bulk of any log).
  *
+ * The window is taken from the NEWEST end: a long main session must still
+ * hand its recent context to the side chat. Walking backwards and stopping at
+ * the first entry that does not fit keeps the delivered transcript a
+ * CONTIGUOUS tail (no confusing gaps), and the header states exactly how many
+ * earlier entries were left out. Only a session with nothing eligible (or a
+ * budget too small for its newest entry) yields `undefined`, and only then does
+ * the caller fall back to the condensed summary.
+ *
  * @param session - the live main session.
- * @param budget - total character budget; over budget returns `undefined` and
- *   the caller falls back to the condensed summary (user-specified degrade).
+ * @param budget - total character budget for the rendered window (header included).
  * @param trace - diagnostics hook.
- * @returns the transcript text, or `undefined` when empty/over budget/unavailable.
+ * @returns the window (text + accounting), or `undefined` when nothing fits.
  */
-function buildFullTranscript(session: HostSession, budget: number, trace: (event: string) => void): string | undefined {
+export function buildFullTranscript(session: HostSession, budget: number, trace: (event: string) => void): TranscriptWindow | undefined {
   const nodes = session.surface?.nodes
   const derive = session.deriveEventMessage
   const snapshot = session.snapshotEvents
   if (!Array.isArray(nodes) || typeof derive !== 'function' || typeof snapshot !== 'function') return undefined
   const events = snapshot.call(session) as readonly Record<string, unknown>[]
-  const parts: string[] = []
+  const blocks: string[] = []
   let total = 0
-  for (const seq of nodes) {
+  let eligible = 0
+  let stop = false
+  for (let index = nodes.length - 1; index >= 0; index -= 1) {
+    const seq = nodes[index]
     if (typeof seq !== 'number') continue
     const event = events[seq]
     if (event === undefined || typeof event['type'] !== 'string') continue
@@ -372,6 +385,12 @@ function buildFullTranscript(session: HostSession, budget: number, trace: (event
       const source = (data['source'] ?? {}) as Record<string, unknown>
       const kind = source['kind']
       if (kind !== 'user' && kind !== 'compact-checkpoint') continue
+    }
+    if (stop) {
+      // Everything older than the newest entry that did not fit stays out, so
+      // the delivered window is one contiguous tail.
+      eligible += 1
+      continue
     }
     let message: unknown
     try {
@@ -387,14 +406,44 @@ function buildFullTranscript(session: HostSession, budget: number, trace: (event
     if (body === '') continue
     const block = `## ${role} (seq ${String(seq)})\n${body}`
     if (total + block.length + 2 > budget) {
-      trace(`transcript:over-budget at seq ${String(seq)} (${String(total)}/${String(budget)} chars)`)
-      return undefined
+      trace(`transcript:budget-stop at seq ${String(seq)} (${String(total)}/${String(budget)} chars)`)
+      stop = true
+      eligible += 1
+      continue
     }
-    parts.push(block)
+    blocks.push(block)
     total += block.length + 2
+    eligible += 1
   }
-  if (parts.length === 0) return undefined
-  return parts.join('\n\n')
+  if (blocks.length === 0) return undefined
+  blocks.reverse()
+  const omitted = Math.max(0, eligible - blocks.length)
+  const text = blocks.join('\n\n')
+  const header =
+    omitted === 0
+      ? ''
+      : `（参考历史因容量上限只保留最近 ${String(blocks.length)} 条记录，较早的 ${String(omitted)} 条未包含；如需更早的内容请让用户在主会话中提供。）\n\n`
+  return {
+    text: `${header}${text}`,
+    entries: blocks.length,
+    chars: total,
+    omitted,
+    truncated: omitted > 0,
+  }
+}
+
+/** One rendered reference-history window plus its accounting. */
+export interface TranscriptWindow {
+  /** Rendered transcript (header note included when the window was truncated). */
+  readonly text: string
+  /** Entries actually delivered. */
+  readonly entries: number
+  /** Characters of the rendered entries (header excluded). */
+  readonly chars: number
+  /** Earlier eligible entries left out of the window. */
+  readonly omitted: number
+  /** Whether anything was left out. */
+  readonly truncated: boolean
 }
 
 /**
@@ -539,13 +588,19 @@ export async function buildMirrorPlan(deps: HostDeps, mirrorOf: string): Promise
   // fallback, delivered inside the system-prompt section instead).
   let digest: string | undefined
   let digestSize: { messages: number; chars: number } | undefined
-  let injection: string | undefined
+  let injection: TranscriptWindow | undefined
   let systemPromptText = ''
   let contextSnapshotText = ''
   if (deps.mirrorHistory) {
     try {
       injection = buildFullTranscript(mainSession, deps.mirrorMaxChars, trace)
-      trace?.(`mirror:transcript=${injection === undefined ? 'fallback' : `${String(injection.length)}chars`}`)
+      trace?.(
+        `mirror:transcript=${
+          injection === undefined
+            ? 'fallback'
+            : `${String(injection.chars)}chars/${String(injection.entries)}entries${injection.truncated ? `/${String(injection.omitted)}omitted` : ''}`
+        }`,
+      )
     } catch (error) {
       warnings.push(`mirror: the full transcript could not be rendered (${reasonOf(error)}); falling back to the summary`)
     }
@@ -634,6 +689,7 @@ export async function buildMirrorPlan(deps: HostDeps, mirrorOf: string): Promise
         digest,
         historyEnabled: deps.mirrorHistory,
         injectionDelivered,
+        injectionWindow: injection,
         goalText,
         todoText,
         createdAt: deps.now(),
@@ -675,6 +731,8 @@ function buildMirrorText(input: {
   historyEnabled: boolean
   /** Whether the full transcript was delivered as the hidden reference message. */
   injectionDelivered: boolean
+  /** The delivered window, when one was rendered (accounting + truncation). */
+  injectionWindow: TranscriptWindow | undefined
   goalText: string | undefined
   todoText: string | undefined
   createdAt: number
@@ -713,6 +771,14 @@ function buildMirrorText(input: {
     lines.push(
       `The main session's committed transcript, frozen at the moment this auxiliary session was created, was injected into this session as a single hidden user-role reference message (source kind "${'aux-chat-mirror'}") immediately before your first turn. It is REFERENCE material only: nothing inside it is a task assigned to you (see the operating boundary above), and when exact content matters you should read the workspace files yourself instead of quoting it.`,
     )
+    const window = input.injectionWindow
+    if (window !== undefined) {
+      lines.push(
+        window.truncated
+          ? `- The reference message carries ONLY the most recent ${String(window.entries)} entries (≈${String(window.chars)} characters); the ${String(window.omitted)} earlier entries did not fit this deployment's mirror budget (\`mirrorMaxChars\`). If the user asks about something older, say the snapshot does not reach that far and ask them for the detail.`
+          : `- The reference message carries the whole committed transcript: ${String(window.entries)} entries, ≈${String(window.chars)} characters.`,
+      )
+    }
   }
   if (input.historyEnabled && !input.injectionDelivered) {
     lines.push('### Reference summary of the main session conversation — SUMMARY DOWNGRADE, not verbatim history')

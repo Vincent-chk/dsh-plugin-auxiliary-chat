@@ -77,6 +77,25 @@ export interface AuxSessionInfo {
   readonly hostGeneration?: string
 }
 
+/**
+ * What the auxiliary session actually inherited from the main session, as
+ * DELIVERED (not as intended). Reported so the panel can state the truth: the
+ * earlier copy claimed "已引用主会话上下文" unconditionally, which was wrong
+ * whenever the injection or its fallback section failed.
+ */
+export interface AuxInheritedReport {
+  /** `full` = committed transcript injected; `summary` = condensed digest in the system prompt; `none` = history mirroring off. */
+  readonly form: 'full' | 'summary' | 'none'
+  /** Entries delivered (transcript entries, or summary lines). */
+  readonly entries: number
+  /** Characters delivered. */
+  readonly chars: number
+  /** Whether older entries were left out of the delivered window (full form only). */
+  readonly truncated: boolean
+  /** Entries left out of the window (full form only). */
+  readonly omitted: number
+}
+
 /** Result of creating one auxiliary session. */
 export interface AuxCreateResult {
   readonly info: AuxSessionInfo
@@ -89,6 +108,8 @@ export interface AuxCreateResult {
    * silently create a second one).
    */
   readonly reclaimed?: boolean
+  /** What this session actually inherited from the main session (delivered form). */
+  readonly inherited?: AuxInheritedReport
 }
 
 /** Result of destroying one auxiliary session. */

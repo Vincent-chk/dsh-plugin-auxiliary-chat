@@ -57,6 +57,7 @@
     "verify": "node scripts/verify.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "race-check": "node --experimental-transform-types src/client/__selfcheck__/race-check.mjs",
-    "drop-check": "node --experimental-transform-types src/client/__selfcheck__/drop-router-check.mjs"
+    "drop-check": "node --experimental-transform-types src/client/__selfcheck__/drop-router-check.mjs",
+    "mirror-check": "node --experimental-transform-types src/host/__selfcheck__/mirror-window-check.mjs"
   }
 }

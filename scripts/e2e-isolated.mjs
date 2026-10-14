@@ -364,6 +364,15 @@ try {
     if (initForkResult?.kind === 'success') {
       const payload = JSON.parse(initForkResult.text)
       check(payload.downgrade === 'full', `the full committed transcript was delivered (downgrade=${String(payload.downgrade)})`)
+      check(payload.inherited?.form === 'full', `the init payload reports the delivered form (inherited.form=${String(payload.inherited?.form)})`)
+      check((payload.inherited?.entries ?? 0) > 0 && (payload.inherited?.chars ?? 0) > 0, `the report carries entries/chars (${String(payload.inherited?.entries)}/${String(payload.inherited?.chars)})`)
+      check(payload.inherited?.truncated === false, 'a short parent is not reported as truncated')
+      // The mirror prompt section used to fail to register silently: a second
+      // scope minted from THIS plugin's ctx could not read `systemPrompt`
+      // (`cannot get property "systemPrompt" without inject`), so a long parent
+      // inherited nothing at all (live defect, 2026-10-14 20:07).
+      const mirrorWarnings = (payload.warnings ?? []).filter((line) => /mirror|systemPrompt|scope|injection/i.test(String(line)))
+      check(mirrorWarnings.length === 0, `init reports no mirror warnings${mirrorWarnings.length === 0 ? '' : `: ${mirrorWarnings.join(' | ').slice(0, 200)}`}`)
     }
     const childLogAfter = readLogText(childLogPath)
     check(childLogAfter.includes('"aux-chat-mirror"'), 'the child log carries the form-A injection (source kind aux-chat-mirror)')
@@ -378,6 +387,100 @@ try {
       submittedAttachments: [],
     }, cookie)
     check(endFork?.result?.value?.result?.kind === 'success', 'the fork child is destroyed through the same close protocol')
+  }
+
+  // ── over-budget parent: the window must be a NEWEST TAIL, and the mirror
+  // section must actually reach the child's assembled prompt. This is the live
+  // failure mode (a 2.6 MB main session inherited nothing) reproduced under the
+  // DEFAULT budget: 16 messages × 8k rendered cap ≈ 128k > mirrorMaxChars.
+  {
+    /**
+     * Count COMMITTED `user/message` events carrying `needle`. A prompt sent
+     * while a turn is in flight lands in the inbox first (`agent/inbox/spliced`);
+     * only a committed user/message belongs to the prefix the mirror renders, so
+     * the probe must wait for each one before sending the next.
+     */
+    const countCommitted = (needle) => {
+      const path = findLogPath(home, 'session-e2e-main-0001')
+      if (path === '') return 0
+      let count = 0
+      for (const line of readLogText(path).split('\n')) {
+        if (!line.includes(needle)) continue
+        try {
+          const event = JSON.parse(line)
+          if (event?.type !== 'user/message') continue
+          if (JSON.stringify(event?.data ?? {}).includes(needle)) count += 1
+        } catch {
+          /* frame boundary, not a whole event */
+        }
+      }
+      return count
+    }
+    const LONG_MESSAGES = 14
+    let committed = 0
+    for (let index = 1; index <= LONG_MESSAGES; index += 1) {
+      const label = `TAIL-MARKER-${String(index).padStart(2, '0')}`
+      await rpc('session/prompt', {
+        request: {
+          requestId: `e2e-req-long-${String(index)}`,
+          sessionId: 'session-e2e-main-0001',
+          mode: 'queue',
+          content: [{ type: 'text', text: `${label} ${'L'.repeat(20_000)}` }],
+        },
+      }, cookie)
+      const deadline = Date.now() + 25_000
+      while (Date.now() < deadline && countCommitted(label) === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      }
+      if (countCommitted(label) > 0) committed += 1
+      else break
+    }
+    check(committed === LONG_MESSAGES, `the long parent committed all ${String(LONG_MESSAGES)} probe messages (${String(committed)})`)
+    const longFork = await rpc('session/fork', { request: { sessionId: 'session-e2e-main-0001', atSeq: 0 } }, cookie)
+    const longChild = longFork?.result?.value?.sessionId
+    check(typeof longChild === 'string' && longChild.startsWith('session-'), `a second fork child was minted (${String(longChild)})`)
+    if (typeof longChild === 'string' && longChild !== '') {
+      const initLong = await rpc('commands/execute', {
+        agentId: longChild,
+        line: `/aux-init ${JSON.stringify({ sessionId: longChild, mirrorOf: 'session-e2e-main-0001' })}`,
+        submittedAttachments: [],
+      }, cookie)
+      const longResult = initLong?.result?.value?.result
+      check(longResult?.kind === 'success', `over-budget init succeeded (${String(longResult?.kind)})`)
+      if (longResult?.kind === 'success') {
+        const payload = JSON.parse(longResult.text)
+        const warnings = (payload.warnings ?? []).filter((line) => /mirror|systemPrompt|scope|injection/i.test(String(line)))
+        check(warnings.length === 0, `over-budget init reports no mirror warnings${warnings.length === 0 ? '' : `: ${warnings.join(' | ').slice(0, 200)}`}`)
+        check(payload.inherited?.form === 'full', `an over-budget parent still delivers a window (inherited.form=${String(payload.inherited?.form)})`)
+        check(payload.inherited?.truncated === true, 'the window is reported as truncated')
+        check((payload.inherited?.omitted ?? 0) >= 1, `earlier entries are counted as omitted (${String(payload.inherited?.omitted)})`)
+        check((payload.inherited?.entries ?? 0) >= 1, `the newest entries are delivered (${String(payload.inherited?.entries)})`)
+      }
+      const longLogPath = findLogPath(home, longChild)
+      const longLog = longLogPath === '' ? '' : readLogText(longLogPath)
+      const newestLabel = `TAIL-MARKER-${String(committed).padStart(2, '0')}`
+      check(longLog.includes(newestLabel), `the newest parent fact is inside the delivered window (${newestLabel})`)
+      check(!longLog.includes('TAIL-MARKER-01'), 'the oldest parent fact was dropped by the budget')
+      check(longLog.includes('容量上限'), 'the window header states the omission')
+      // The section must reach the assembled prompt (the live defect): prompt the
+      // child once (the turn stops at the provider boundary without credentials)
+      // and read the system message it produced.
+      await rpc('session/prompt', {
+        request: { requestId: 'e2e-req-long-child', sessionId: longChild, mode: 'queue', content: [{ type: 'text', text: 'summarise what you know' }] },
+      }, cookie)
+      let sectionSeen = false
+      const deadline = Date.now() + 30_000
+      while (Date.now() < deadline && !sectionSeen) {
+        const path = findLogPath(home, longChild)
+        const text = path === '' ? '' : readLogText(path)
+        sectionSeen = text.includes('Auxiliary session context mirror')
+        if (!sectionSeen) await new Promise((resolve) => setTimeout(resolve, 500))
+      }
+      check(sectionSeen, "the mirror section reached the child's assembled system prompt")
+      const finalLog = findLogPath(home, longChild) === '' ? '' : readLogText(findLogPath(home, longChild))
+      check(finalLog.includes('Auxiliary session context mirror'), 'the section text is in the durable child log')
+      await rpc('commands/execute', { agentId: longChild, line: `/aux-end ${JSON.stringify({ sessionId: longChild })}`, submittedAttachments: [] }, cookie).catch(() => undefined)
+    }
   }
 
   // ── PRD v2.0 T12: a close carrying a DEAD host generation is refused and

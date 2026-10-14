@@ -36,6 +36,7 @@ import { MIRROR_SECTION_NAME, MIRROR_SECTION_ORDER, MIRROR_SOURCE_KIND, buildMir
 import { writeMarker, markerExists } from './registry.ts'
 import type {
   AuxCreateResult,
+  AuxInheritedReport,
   AuxSessionInfo,
   HostAgent,
   HostAgentCtx,
@@ -70,9 +71,22 @@ export interface AuxInitRequest {
 const FORBIDDEN_TOOL_PATTERN =
   /^(subagent|spawn_teammate|workflow|team_task_[a-z]+|list_agents|interrupt_agent|send_message|wait_agent)$/
 
-/** Register the mirror prompt section in the auxiliary agent's own scope. */
+/**
+ * Register the mirror prompt section in the auxiliary agent's own scope.
+ *
+ * The property read is guarded: Cordis throws `cannot get property
+ * "systemPrompt" without inject` when the context's fiber does not declare the
+ * service, and a mirrored section that silently disappears is exactly the
+ * defect this function now reports instead (2026-10-14).
+ */
 function registerMirrorSection(agentCtx: HostAgentCtx, text: string, warnings: string[]): void {
-  const target = agentCtx.systemPrompt
+  let target: HostAgentCtx['systemPrompt']
+  try {
+    target = agentCtx.systemPrompt
+  } catch (error) {
+    warnings.push(`mirror: the mirrored context is NOT in this session's prompt (${reasonOf(error)})`)
+    return
+  }
   if (target?.section === undefined) {
     warnings.push("mirror: the agent-scoped systemPrompt service is unavailable; the mirrored context is not in this session's prompt")
     return
@@ -90,8 +104,17 @@ function registerMirrorSection(agentCtx: HostAgentCtx, text: string, warnings: s
  * A guard (not a tool filter) is used on purpose — it needs no allow-list of
  * deployment tools and denies by reason without disabling unrelated tools.
  */
+/** One tool-call denial predicate (the argument `dsh-tools`' guard accepts). */
+type ToolGuardPredicate = (exec: { name?: unknown }) => string | undefined
+
 function installToolGuard(agentCtx: HostAgentCtx, warnings: string[]): void {
-  const guard = agentCtx.tools?.guard
+  let guard: ((predicate: ToolGuardPredicate) => unknown) | undefined
+  try {
+    guard = agentCtx.tools?.guard
+  } catch (error) {
+    warnings.push(`subagent tool guard unavailable (${reasonOf(error)}); subagent calls are blocked by instructions only`)
+    return
+  }
   if (guard === undefined) {
     warnings.push('mirror: the tools service is unavailable in this scope; subagent calls are blocked by instructions only')
     return
@@ -331,13 +354,15 @@ export async function initAuxSession(deps: HostDeps, request: AuxInitRequest): P
         {
           id: randomUUID(),
           role: 'user',
-          content: [{ type: 'text', text: plan.injection }],
+          content: [{ type: 'text', text: plan.injection.text }],
           source: { kind: MIRROR_SOURCE_KIND, form: 'reference' },
         },
         { surfaceOp: 'append' },
       )
       injectionDelivered = true
-      trace?.(`init:injection ${String(plan.injection.length)}chars`)
+      trace?.(
+        `init:injection ${String(plan.injection.chars)}chars/${String(plan.injection.entries)}entries${plan.injection.truncated ? `/${String(plan.injection.omitted)}omitted` : ''}`,
+      )
     } catch (error) {
       warnings.push(`mirror: the full-history injection failed (${reasonOf(error)}); the summary section is used instead`)
     }
@@ -348,19 +373,39 @@ export async function initAuxSession(deps: HostDeps, request: AuxInitRequest): P
       ? 'summary'
       : plan.downgrade
 
-  const modules = await deps.loadDsh()
+  // ── prompt section + tool guard: registered in the AGENT'S OWN scope.
+  // `dsh-agent-loop` already minted that scope (`this.scope =
+  // createScope(loopCtx, this); this.ctx = this.scope.ctx`,
+  // agent-loop/lib/index.js:778-779) and its fiber declares `systemPrompt` and
+  // `tools` (its static inject). Minting a SECOND scope from this plugin's own
+  // ctx cannot work: our fiber does not declare `systemPrompt`, so property
+  // access inside the fresh scope throws `cannot get property "systemPrompt"
+  // without inject` and the mirror section never registers (observed live
+  // 2026-10-14 20:07: child prompt carried no main-session content at all).
+  // Registering through `agent.ctx` also means the registrations unwind with
+  // the agent itself — no scope to dispose, no leak on a registration failure.
+  const sectionText = injectionDelivered ? plan.promptSection.text : plan.fallbackSection.text
+  const agentScopeCtx = agent.ctx as unknown as HostAgentCtx | undefined
+  // Only the legacy fallback (an agent that exposes no ctx) needs an extra
+  // scope, and only that path owns a disposer.
   let scopeDispose: (() => Promise<void>) | undefined
-  if (typeof modules.createScope === 'function') {
-    try {
-      const scope = modules.createScope(deps.ctx as HostContext, agent)
-      registerMirrorSection(scope.ctx as unknown as HostAgentCtx, injectionDelivered ? plan.promptSection.text : plan.fallbackSection.text, warnings)
-      installToolGuard(scope.ctx as unknown as HostAgentCtx, warnings)
-      scopeDispose = scope.dispose
-    } catch (error) {
-      warnings.push(`agent scope could not be minted (${reasonOf(error)}); the mirror section is not active`)
-    }
+  if (agentScopeCtx !== undefined) {
+    registerMirrorSection(agentScopeCtx, sectionText, warnings)
+    installToolGuard(agentScopeCtx, warnings)
   } else {
-    warnings.push('dsh-scope is not resolvable; the mirror section could not be registered in the agent scope')
+    const modules = await deps.loadDsh()
+    if (typeof modules.createScope === 'function') {
+      try {
+        const scope = modules.createScope(deps.ctx as HostContext, agent)
+        registerMirrorSection(scope.ctx as unknown as HostAgentCtx, sectionText, warnings)
+        installToolGuard(scope.ctx as unknown as HostAgentCtx, warnings)
+        scopeDispose = scope.dispose
+      } catch (error) {
+        warnings.push(`the agent scope could not be used for the mirror section (${reasonOf(error)}); the mirrored context is not in this session's prompt`)
+      }
+    } else {
+      warnings.push('the agent scope is unreachable (no agent.ctx, no dsh-scope); the mirror section could not be registered')
+    }
   }
 
   deps.owned.add(sessionId)
@@ -382,8 +427,28 @@ export async function initAuxSession(deps: HostDeps, request: AuxInitRequest): P
 
   if (deps.hideFromSidebar) await archiveAuxSession(deps, sessionId, warnings)
 
-  trace?.(`init:ready ${sessionId} downgrade=${effectiveDowngrade}`)
-  return { info, warnings, downgrade: effectiveDowngrade, ...(request.mode === 'reclaim' ? { reclaimed: true } : {}) }
+  // Delivered inheritance, for the panel: the transcript window when it landed,
+  // otherwise the digest that the section carries, otherwise nothing.
+  const inherited: AuxInheritedReport = injectionDelivered
+    ? {
+        form: 'full',
+        entries: plan.injection?.entries ?? 0,
+        chars: plan.injection?.chars ?? 0,
+        truncated: plan.injection?.truncated === true,
+        omitted: plan.injection?.omitted ?? 0,
+      }
+    : effectiveDowngrade === 'none'
+      ? { form: 'none', entries: 0, chars: 0, truncated: false, omitted: 0 }
+      : { form: 'summary', entries: plan.digest?.messages ?? 0, chars: plan.digest?.chars ?? 0, truncated: false, omitted: 0 }
+
+  trace?.(`init:ready ${sessionId} downgrade=${effectiveDowngrade} inherited=${inherited.form}/${String(inherited.entries)}`)
+  return {
+    info,
+    warnings,
+    downgrade: effectiveDowngrade,
+    inherited,
+    ...(request.mode === 'reclaim' ? { reclaimed: true } : {}),
+  }
 }
 
 /** Best-effort removal of the artifacts a half-initialized session may own. */
