@@ -216,11 +216,22 @@ try {
   dump(auxPage.records, 'AUX session page RIGHT AFTER CREATE (what the client can draw)', inheritedCut)
 
   const inherited = inheritedCut === undefined ? [] : auxPage.records.filter((event) => event.seq <= inheritedCut)
-  const drawableAll = auxPage.records.filter((event) => ['user/message', 'assistant/message'].includes(event.type))
+  // v3: mirror the CLIENT's real classification — a user/message whose
+  // source.kind !== 'user' is a hidden context node (isVisibleChatNode), never
+  // a drawable bubble. The form-A injection is exactly such a message.
+  const drawableAll = auxPage.records.filter(
+    (event) =>
+      event.type === 'assistant/message' ||
+      (event.type === 'user/message' && ((event.data?.source?.kind ?? 'user') === 'user')),
+  )
+  const hiddenInjections = auxPage.records.filter(
+    (event) => event.type === 'user/message' && event.data?.source?.kind === 'aux-chat-mirror',
+  )
   console.log(
     `\nVERDICT Q1a: client-visible records inherited from the main session = ${String(inherited.length)} (expected 0: the session is not seeded)`,
   )
   console.log(`VERDICT Q1b: drawable transcript rows in the whole auxiliary page = ${String(drawableAll.length)} (expected 0: a clean chat page)`)
+  console.log(`VERDICT Q1e: hidden form-A injections (source.kind=aux-chat-mirror, never drawn) = ${String(hiddenInjections.length)} (expected 1 when the parent has committed history)`)
   console.log(`VERDICT Q1c: an inherited cut marker exists = ${String(marker !== undefined)} (expected false)`)
   console.log(`VERDICT Q1d: whole auxiliary page = ${JSON.stringify(auxPage.records.map((event) => `${String(event.seq)}:${event.type}`))}`)
 

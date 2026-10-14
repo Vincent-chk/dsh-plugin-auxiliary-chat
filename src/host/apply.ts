@@ -42,7 +42,11 @@ import type { AuxSweepResult, HostCommandInvocation, HostContext, HostDeps, Host
  */
 const schemastery = await importHostPackage(undefined, '@deepseek-ai/schemastery')
 const z = schemastery?.['default'] as
-  | { object(shape: Record<string, unknown>): unknown; boolean(): { default(value: boolean): unknown } }
+  | {
+      object(shape: Record<string, unknown>): unknown
+      boolean(): { default(value: boolean): unknown }
+      number(): { default(value: number): unknown }
+    }
   | undefined
 
 /** Cordis service keys this plugin waits for before it loads. */
@@ -68,7 +72,7 @@ export const name = 'aux-chat'
 export const Config =
   z === undefined
     ? undefined
-    : z.object({ hideFromSidebar: z.boolean().default(true), mirrorHistory: z.boolean().default(true) })
+    : z.object({ hideFromSidebar: z.boolean().default(true), mirrorHistory: z.boolean().default(true), mirrorMaxChars: z.number().default(100_000) })
 
 /** Config as `apply` reads it, defaults included. */
 export interface AuxChatConfig {
@@ -92,6 +96,11 @@ export interface AuxChatConfig {
    * `hideFromSidebar`: the four combinations are all valid.
    */
   readonly mirrorHistory?: boolean
+  /**
+   * Character budget for the full committed-transcript injection; a rendering
+   * above it falls back to the condensed summary (default 100 000).
+   */
+  readonly mirrorMaxChars?: number
 }
 
 /** Command line descriptions, shown by command discovery UI. */
@@ -165,6 +174,10 @@ export function createHostDeps(ctx: HostContext, config?: AuxChatConfig, owned: 
     hideFromSidebar: config?.hideFromSidebar !== false,
     // Opt-OUT, because mirroring is the feature the panel exists for.
     mirrorHistory: config?.mirrorHistory !== false,
+    mirrorMaxChars:
+      typeof config?.mirrorMaxChars === 'number' && Number.isFinite(config.mirrorMaxChars) && config.mirrorMaxChars >= 1000
+        ? Math.floor(config.mirrorMaxChars)
+        : 100_000,
     trace,
   }
 }
@@ -249,11 +262,18 @@ export async function apply(ctx: HostContext, config?: AuxChatConfig): Promise<v
       } catch (error) {
         deps.trace?.(`command:aux-init error ${describeError(error)}`)
         // A failure after the session was created must not leave a blank
-        // uninitialized session in the sidebar. A RECLAIM that fails has
-        // created nothing — the session it named either is not ours
-        // (reclaim-mismatch) or no longer exists here (session-not-created),
-        // and both must be left exactly as they are.
-        if (!reclaiming && targetId !== undefined && candidateId === targetId) {
+        // uninitialized session behind. Two classes of failure must NOT clean
+        // up, because the session they name pre-exists this request and is not
+        // ours to roll back:
+        //   - a RECLAIM (it created nothing by definition);
+        //   - an IDENTITY refusal (parent-mismatch / reclaim-mismatch /
+        //     already-initialized): the target is a live session forked from
+        //     another parent or an already-running auxiliary — deleting its
+        //     artifacts would destroy foreign or in-use state.
+        const code = error instanceof AuxChatError ? error.code : ''
+        const identityRefusal =
+          code === 'aux-chat/parent-mismatch' || code === 'aux-chat/reclaim-mismatch' || code === 'aux-chat/already-initialized'
+        if (!reclaiming && !identityRefusal && targetId !== undefined && candidateId === targetId) {
           deps.owned.delete(candidateId)
           deps.registry.remove(candidateId)
           await bestEffortCleanup(deps, candidateId).catch(() => undefined)

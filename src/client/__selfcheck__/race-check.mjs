@@ -116,6 +116,9 @@ function makeSidebar() {
   }
 }
 
+/** Module-wide so ids minted by different harnesses never collide. */
+let createCounter = 0
+
 const sidebar = makeSidebar()
 
 /** Programmable deps: every call is recorded; outcomes are scripted per test. */
@@ -130,14 +133,17 @@ function makeDeps() {
       get: (name) => (name === 'sidebarRight' ? sidebar : undefined),
     },
     closeTimeoutMs: 60,
-    async create(auxSessionId, cwd, mainSessionId) {
+    async create(cwd, mainSessionId) {
+      // v3 channel: the child id is SERVER-MINTED (fork); the fake mints it
+      // here and returns it with the outcome, exactly like the real remote.
+      const auxSessionId = `session-aux-${String((createCounter += 1)).padStart(4, '0')}`
       log.create.push({ auxSessionId, cwd, mainSessionId })
       if (modes.create === 'defer') {
         await new Promise((resolve) => deferreds.push({ auxSessionId, resolve }))
       } else if (modes.create === 'fail') {
         throw new Error('aux-chat/internal: boom')
       }
-      return { cwd, warnings: [], downgrade: 'summary', hostGeneration: 'gen-host-1' }
+      return { cwd, warnings: [], downgrade: 'full', hostGeneration: 'gen-host-1', sessionId: auxSessionId }
     },
     async reclaim(auxSessionId, mainSessionId) {
       log.reclaim.push({ auxSessionId, mainSessionId })

@@ -122,6 +122,14 @@ export interface SessionsLike {
   retain(target: string, options: { source: string; signal?: AbortSignal | undefined }): SessionReferenceLike
   /** Create or adopt a Session on the Host with a pre-generated identity. */
   create?(opts: { workspaceId?: string; cwd?: string; sessionId?: string }): Promise<string>
+  /**
+   * Fork a session from an exact inclusive prefix; returns the server-minted
+   * child id. `atSeq: 0` forks an EMPTY prefix — the child inherits no events
+   * but its header durably carries `parentSession` (the v3 creation channel).
+   */
+  fork?(opts: { sessionId: string; atSeq?: number }): Promise<string>
+  /** Apply one per-session model selection (the model picker's own verb). */
+  selectModel?(request: { sessionId: string; provider: string; model: string; reasoningEffort?: string }): Promise<unknown>
   binding(id: string): SessionBindingLike | undefined
   scope(id: string): unknown
   retainInfo(id: string): ObservableSnapshotLike<{ retainedBy?: Readonly<Record<string, number>> | undefined }>

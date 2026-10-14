@@ -59,9 +59,14 @@ export interface HandoffOutcome {
 export interface AuxCreateOutcome {
   readonly cwd: string
   readonly warnings: readonly string[]
-  readonly downgrade: 'summary' | 'none'
+  /** `full` = the complete committed transcript was injected (form A). */
+  readonly downgrade: 'full' | 'summary' | 'none'
   /** Host boot generation that owns the resource (PRD v2.0 §4.2). */
   readonly hostGeneration?: string
+  /** Parent model-route snapshot reported by the mirror plan. */
+  readonly provider?: string
+  readonly model?: string
+  readonly reasoningEffort?: string
   /** True when an existing live child was re-attached instead of created. */
   readonly reclaimed?: boolean
 }
@@ -100,7 +105,7 @@ export interface AuxTabRuntime {
   phase: TabSessionPhase
   message: string | undefined
   warnings: readonly string[]
-  downgrade: 'summary' | 'none'
+  downgrade: 'full' | 'summary' | 'none'
   unread: boolean
   running: boolean
   closeState: CloseState
@@ -169,7 +174,11 @@ const OWNER_KEY = 'aux-chat.owner'
 export interface AuxChatDeps {
   sessions: SessionsLike
   retainSource: string
-  create(auxSessionId: string, cwd: string, mainSessionId: string): Promise<AuxCreateOutcome>
+  /**
+   * Create the child for one main session and return its SERVER-MINTED id
+   * with the init outcome (v3: fork + /aux-init live behind this call).
+   */
+  create(cwd: string, mainSessionId: string): Promise<AuxCreateOutcome & { sessionId: string }>
   /** Re-attach to a previously bound live child; `gone` = it no longer exists. */
   reclaim(auxSessionId: string, mainSessionId: string): Promise<ReclaimOutcome>
   dispose(auxSessionId: string, options?: { operationId?: string; hostGeneration?: string }): Promise<void>
@@ -398,30 +407,26 @@ export class AuxChatController {
       return
     }
 
-    const sessionId = newSessionId()
-    // Bind the id BEFORE the round-trip so every abort/supersede path below
-    // can converge a half-created resource instead of leaking it.
-    runtime.sessionId = sessionId
-    this.update()
-    let outcome: AuxCreateOutcome
+    // The child id is SERVER-MINTED (fork): it exists only once the round-trip
+    // resolves, so the late-success rollback below keys on the RESPONSE id.
+    let created: AuxCreateOutcome & { sessionId: string }
     try {
-      outcome = await this.deps.create(sessionId, runtime.cwd, runtime.mainSessionId)
+      created = await this.deps.create(runtime.cwd, runtime.mainSessionId)
     } catch (error) {
-      if (!this.isCurrent(runtime, epoch) || runtime.signal.aborted) {
-        void this.deps.dispose(sessionId).catch(() => undefined)
-        return
-      }
+      if (!this.isCurrent(runtime, epoch) || runtime.signal.aborted) return
       runtime.sessionId = undefined
       this.patchTab(runtime.tabId, { phase: 'failed', message: describeError(error) })
       return
     }
+    const sessionId = created.sessionId
     if (!this.isCurrent(runtime, epoch) || runtime.signal.aborted) {
       // A late success after the pending tab closed or was superseded rolls
-      // back the child it created and installs nothing (E06/T04/R09).
+      // back the child it created and installs nothing (E06/T04/R09). The
+      // child was fully initialized by now, so /aux-end converges it.
       void this.deps.dispose(sessionId).catch(() => undefined)
       return
     }
-    this.bindReference(runtime, sessionId, outcome, epoch)
+    this.bindReference(runtime, sessionId, created, epoch)
   }
 
   /**
@@ -833,6 +838,25 @@ export class AuxChatController {
     return sessionId === undefined ? undefined : this.references.get(sessionId)
   }
 
+  /**
+   * Whether one main session currently sits in the workspace archive set.
+   * SOFT HINT only (E11): the platform does not cascade archiving to
+   * non-subagent lineage, so the auxiliary child keeps running — the panel
+   * tells the user the reference parent is archived, nothing more.
+   */
+  isMainArchived(mainSessionId: string | undefined): boolean {
+    if (mainSessionId === undefined) return false
+    try {
+      const workspaces = this.deps.client.get('workspaces') as
+        | { list?: { getSnapshot?: () => { archivedSessionIds?: readonly string[] } } }
+        | undefined
+      const ids = workspaces?.list?.getSnapshot?.()?.archivedSessionIds
+      return Array.isArray(ids) && ids.includes(mainSessionId)
+    } catch {
+      return false
+    }
+  }
+
   /** Whether a session is one of THIS plugin's auxiliary sessions. */
   isAuxSession(sessionId: string | undefined): boolean {
     if (sessionId === undefined) return false
@@ -894,11 +918,11 @@ export class AuxChatController {
       return
     }
     if (this.busy) return
-    const sessionId = newSessionId()
     this.busy = true
     this.update({ status: '正在准备主会话上下文…' })
     try {
-      const outcome = await this.deps.create(sessionId, this.cwdOf(mainSessionId), mainSessionId)
+      const outcome = await this.deps.create(this.cwdOf(mainSessionId), mainSessionId)
+      const sessionId = outcome.sessionId
       const reference = this.deps.sessions.retain(sessionId, { source: this.deps.retainSource })
       void reference.ready.catch(() => undefined)
       this.references.set(sessionId, reference)

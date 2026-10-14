@@ -40,7 +40,7 @@ export interface AuxCreateResult {
    * The panel is expected to say so; PRD §06 forbids presenting a summary as
    * if it were the full reference history.
    */
-  readonly downgrade: 'summary' | 'none'
+  readonly downgrade: 'full' | 'summary' | 'none'
   /** True when an already-registered live session was re-attached (reclaim). */
   readonly reclaimed?: boolean
 }
@@ -148,11 +148,17 @@ export interface HostAgentOptions {
  */
 export interface HostSession {
   readonly id?: string
-  readonly header?: { readonly cwd?: string }
+  readonly header?: { readonly cwd?: string; readonly parentSession?: string }
   readonly surface?: { readonly nodes?: readonly number[] }
   snapshotEvents?: (fromSeq?: number, toSeqExclusive?: number) => readonly unknown[]
   deriveEventMessage?: (event: unknown) => unknown
-  append?: (type: string, data: unknown) => unknown
+  /**
+   * Append one event to the live log. The third argument carries the surface
+   * metadata a surface-eligible event (like `user/message`) requires:
+   * `{ surfaceOp: 'append' }` — the exact shape the agent loop itself uses
+   * (dsh-agent-loop/lib/index.js:1061).
+   */
+  append?: (type: string, data: unknown, surface?: { surfaceOp?: string; sourceEventSeqs?: readonly number[] }) => unknown
 }
 
 /** The live Agent — read-only projection of what we touch. */
@@ -271,6 +277,11 @@ export interface HostDeps {
   readonly hideFromSidebar: boolean
   /** Whether the main session's content (summary + prompt) is mirrored at all. */
   readonly mirrorHistory: boolean
+  /**
+   * Character budget for the FULL committed-transcript injection (form A).
+   * A rendering that exceeds it falls back to the condensed summary section.
+   */
+  readonly mirrorMaxChars: number
   /**
    * Identity of THIS host boot, minted once per `apply()` (PRD v2.0 §4.2
    * `hostIdentity`). Returned with every create result and cross-checked by

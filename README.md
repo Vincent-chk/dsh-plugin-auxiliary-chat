@@ -8,10 +8,10 @@ DeepSeek Harness 的**辅助会话**插件：在**当前会话窗口内**、会�
 |---|---|
 | 入口 | **会话头部右侧按钮**（`conversation.session.header.utilities`，order 20）。不在左栏、不切换主区 |
 | 形态 | **框架的右列 `rightbar`**：中栏按轨道宽度自动让位，与主对话并排；收起即隐藏 |
-| 会话身份 | 每次新建生成一个**独立的普通 DSH 会话**（不是 subagent、不是 fork 到会话列表） |
-| 上下文继承 | **单向镜像，且只走系统提示词**：新建时把主会话的最近对话摘要（12 条 / 每条 700 字 / 总 6000 字上限）、渲染后的系统提示词、动态上下文快照、模型与权限预设、goal/todo/cwd 组装进一条 `aux-chat-mirror` 提示词 section。**刻意不 seed**——见下 |
+| 会话身份 | 每次新建走 **`sessions.fork({atSeq:0})`**：服务端铸造子 id，**空继承**（无任何父事件，不画气泡），子会话 header 持久携带 `parentSession=主会话`（结构性归属，客户端无法谎报）；不是 subagent、不进会话列表（归档隐藏，见下） |
+| 上下文继承 | **单向冻结快照，双通道**：①主会话的**全量已提交转录**经隐藏 `user/message`（`source.kind='aux-chat-mirror'`，压缩检查点同款）一次性注入——模型全量可见、UI 永不渲染；超预算（默认 100k 字符，`Config.mirrorMaxChars`）回退②系统提示词 section 里的摘要（12 条 / 每条 700 字）。操作边界指令、渲染后的主系统提示词、动态上下文、模型与权限预设、goal/todo/cwd 恒走 section。**刻意不 seed**——见下 |
 | 聊天页 | **全新空白**：辅助会话从空会话开始，聊天记录里没有任何主会话内容（这是"不 seed"的直接结果） |
-| 主会话可见性 | 主会话**完全看不到**辅助会话的任何痕迹：创建是两阶段——先经 `sessions.create` 建空会话，再把 `/aux-init` 发到**辅助会话自身**（命令生命周期只落在辅助会话的日志里，且由空渲染器隐藏）。主转录零命令行、零创建日志（PRD R06） |
+| 主会话可见性 | 主会话**完全看不到**辅助会话的任何痕迹：`fork` 只读父会话（父日志字节级不变，e2e 断言），`/aux-init` 发到**辅助会话自身**（命令行只落在辅助日志里，由空渲染器隐藏）。主转录零命令行、零创建日志（PRD R06） |
 | 侧边栏可见性 | **默认隐藏**（归档集：默认过滤器与搜索都不显示；「仅看归档」下仍可见、回合运行期间行短暂可见）。`Config.hideFromSidebar:false` 可回到可见 |
 | 配置 | 创建时快照主会话的模型与权限预设，之后可在辅助面板内**独立修改** |
 | 能力 | 与主会话一致：完整工具能力，工作目录与主会话相同；产出的工作区文件**保留** |
@@ -25,13 +25,20 @@ DeepSeek Harness 的**辅助会话**插件：在**当前会话窗口内**、会�
 
 ## 三个平台约束（决定了本插件的关键取舍）
 
-### 1. 继承不能有可见的历史 ⇒ 刻意不 seed
+### 1. 继承不能有可见的历史 ⇒ 空 fork + 隐藏消息注入（v3 修订）
 
-平台其实**存在 fork 接缝**（客户端 `sessions.fork({sessionId, atSeq})`、host 侧 `session/end-seed`），但 fork 出的继承段会进入子会话日志并发给浏览器；要让它不画成气泡，需要客户端按 `inheritedEventCount` 截断视图，而该字段在当前会话内容工厂的渲染路径里没有被消费。所以一旦用 seed 承载主会话历史，它仍会被画成气泡——这正是用户投诉的"内容重复显示"。
+**seed 仍然刻意不用**：fork 出的继承段会进入子会话日志并发给浏览器，而 5 个客户端 UI 包对 `inheritedEventCount`/`ownEvents`/`isSeeded` **零引用**（2026-10-14 复核确认），没有任何截断视图的输入——用 seed 承载主会话历史必被画成气泡，这正是用户投诉的"内容重复显示"。
 
-平台稳定的"模型能看、transcript 不画"通道是系统提示词（`isVisibleChatNode()` 明确排除 system prompt / context / 权限命令）。因此上下文继承**只走提示词**，`seed` 不用，聊天页 100% 干净。
+但"模型能看、transcript 不画"的通道其实有**两条**（此前文档只记了第一条，已修订）：
 
-配合**两阶段创建**（先 `sessions.create` 建空会话，再把 `/aux-init` 发到辅助会话自身），命令的 `command/run`+`command/done` 只落在辅助会话日志里（由空 `commandview` 渲染器隐藏），主会话转录连命令行都没有——R06 的"父转录零创建日志"完整达成。
+1. **系统提示词 section**——`isVisibleChatNode()` 排除 system-prompt 节点；
+2. **`source.kind !== "user"` 的 `user/message` 事件**——chat 视图把它分类为 `context` 节点并隐藏（`isVisibleChatNode` 排除 context 类；分类逻辑 ui-chat L9277-9290），而 `deriveEventMessage`（dsh-session L214-226）对 user/message **无条件**放行到模型请求历史。官方自己就在用这条通道：压缩检查点（`source:{kind:"compact-checkpoint"}`）、time-context 注入、tool-goal 通知（`source:{kind:"tool-goal"}`）。
+
+v3 因此把继承升级为：`fork(atSeq:0)`（**空前缀**，只取 header 里的 `parentSession` 结构身份，零可画事件）+ 通道 2 注入**全量已提交转录**（形态 A，压缩检查点同款；一次性写入、日志即证据、无每步重算）。边界=创建时刻的已提交前缀（进行中回合的流式片段结构性排除，其已提交的用户消息包含在内——根治旧缺陷 D1）；超预算回退通道 1 的摘要。聊天页保持 100% 干净。
+
+原生角色级继承（ZCode 式）不可达，已核实为平台极限：`assistant/message` UI 恒画、`developer/message` 被 `withoutDeveloperMessages`（dsh-llm L755-758）从请求剥离、header `origin` 钉死仅 `"subagent"`（自定义值会被丢弃，且 subagent 身份会冻结 composer 寻址）。
+
+创建链路：`fork` 只读父会话（父日志字节级不变），`/aux-init` 发到辅助会话自身（`command/run`+`command/done` 只落辅助日志、空渲染器隐藏）——R06"父转录零创建日志"在 fork 通道下继续完整达成（e2e 断言父日志不含任何辅助痕迹）。
 
 ### 2. 隐藏 = 归档（2026-10-14 第二轮重做：门禁桥接，能力零损失）
 
@@ -75,7 +82,18 @@ DSH 0.2.0-rc.2 **没有**任何"不落盘会话"开关，也**没有**会话删�
 
 **刷新重连（§7.1 / E12 / T16）**：pane ready 时把 `tabKey → {sessionId, mirrorOf, hostGeneration}` 记入 localStorage，键含**窗口 owner**（sessionStorage，刷新保留、第二窗口隔离）。刷新后同 tab 重挂 → 先 `/aux-init mode:"reclaim"` 复接原 child（绝不二次 fork）；Host 侧凭 registry/marker 验证归属、拒绝改绑父会话与外来 id。复接被拒（Host 已重启回收）→ 面板显示"辅助会话已结束" + 显式「新建辅助会话」（新资源代次，不复活）。**未实现**：120s 失联宽限的自动到期回收——无日志污染的存活信号接缝（§15.3-4 已登记为开放项）；当前由 Host 重启清扫兜底。
 
-**离线验证**：`npm run race-check`（43 项，驱动真实 controller：C01–C12 覆盖 R01/T01/T04/T05/T14/E06/E07/E12/T16/T12/§6.3 看门狗与幂等）；`scripts/e2e-isolated.mjs` 35 项（真实栈：代次下发、reclaim 三分支、stale-generation 拒绝且资源未动、operationId 回显）。
+**离线验证**：`npm run race-check`（43 项，驱动真实 controller：C01–C12 覆盖 R01/T01/T04/T05/T14/E06/E07/E12/T16/T12/§6.3 看门狗与幂等）；`scripts/e2e-isolated.mjs` **54 项**（真实栈：代次下发、reclaim 三分支、stale-generation 拒绝且资源未动、operationId 回显、归档隐藏+门禁桥+运行期上下文注入+空闲回补、**v3 fork 通道**：parentSession 结构绑定、空继承、parent-mismatch 拒绝、downgrade=full、D1 事实入模型上下文、父日志零痕迹）。
+
+### 与 ZCode 侧边栏机制的对照登记（2026-10-14 审查结论）
+
+| ZCode 机制 | 本插件等价物 | 状态 |
+|---|---|---|
+| 继承切点=活跃 turn 的真实用户消息 | 全量注入取**已提交事件前缀**（流式未提交片段结构性排除；进行中回合的已提交用户消息包含） | ✅ v3 对齐 |
+| `parent_id` 归属 | header `parentSession`（fork 服务端写入；list/搜索暴露 `parentSessionId`） | ✅ v3 对齐 |
+| `baseRevision` / 命令 ack | `hostGeneration` / `operationId`（关闭绑定与幂等重试） | ✅ v2 已对齐 |
+| 输入队列 / 待发改道 | 平台 agent FIFO（inbox `next-turn`/`next-step`）+ `prompt(requestId)` 幂等；面板经 `pendingSubmissions` 观察队列并纳入关闭确认 | ✅ 等价（借用官方 composer，无需自建） |
+| 原生角色级历史继承 | **平台不可达**（assistant 恒画 / developer 被剥离 / origin 钉死）——以隐藏 user/message 全量注入逼近 | ⚠️ 极限登记 |
+| E11 父归档联动 | 平台不级联非-subagent lineage；面板软提示「主会话已归档：参考历史已冻结」 | ✅ 软提示 |
 
 ## 安装（全局部署到 desktop profile）
 
@@ -109,6 +127,8 @@ node scripts/build.mjs --half host     # 只打 Node 半侧（需重启 DSH 生�
 - 两个半侧可独立构建，因此可以并行开发（见下）。
 
 ## 已验证到什么程度
+
+**当前门（v3，2026-10-14）**：build / smoke / verify 19 / integration 32 / **race-check 43** / **e2e-isolated 54** 全绿；spike（`scripts/spike-fork.mjs`，S1-S9）实证 fork(atSeq:0) 全链、形态 A append 形状（`{surfaceOp:'append'}`，agent-loop L1061 同款）、seed 事件派生 0 条模型消息、`blank=true` 孤儿不可见、selectModel 可用。下表为历史各轮验证明细（部分行属 v1/v2 时代口径）：
 
 在一个**隔离的 DSH 实例**（独立 `DSH_HOME=/tmp/...`、独立端口，用 desktop profile 的组合复制而成，不触碰你正在运行的应用）上实测通过：
 
@@ -189,7 +209,7 @@ scripts/                 build / smoke / verify / integration / install-profile
 2. **`conversation.content` 是跨版本的耦合点**：DSH 升级若改 factory 输入形状会破。面板为其缺席准备了 fallback 占位（不白屏）。
 3. **辅助会话在生命周期内可被 `session.search` 搜到**（磁盘上真实存在）。关闭后随删除消失。
 4. **`@` 提及候选**：官方 `sessionReferenceResolver` 不按 `origin` 过滤，辅助会话带 `[辅助]` 标题前缀以便辨认。默认不拦截（需替换官方 Typert 服务，侵入性过高），后续可作为加固项开启。
-5. **自动标题**：辅助会话不带 `parentSession`，因此会触发一次首轮标题 LLM 调用（官方行为，`dsh-session-title/lib/index.js:386`）。
+5. **自动标题**：~~辅助会话会触发一次首轮标题 LLM 调用~~ **v3 已根治**——fork 通道使子 header 携带 `parentSession`，标题插件的触发条件（`dsh-session-title/lib/index.js:386`）要求 `parentSession === undefined`，且注入消息 `source.kind !== 'user'` 也不满足触发条件（L381），双重抑制；`pinTitle` 仍固定 `[辅助]` 前缀标题供「仅看归档」辨认。
 
 ## License
 
