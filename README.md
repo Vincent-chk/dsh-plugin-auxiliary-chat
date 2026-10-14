@@ -123,7 +123,7 @@ DSH 0.2.0-rc.2 **没有**任何"不落盘会话"开关，也**没有**会话删�
 
 **刷新重连（§7.1 / E12 / T16）**：pane ready 时把 `tabKey → {sessionId, mirrorOf, hostGeneration}` 记入 localStorage，键含**窗口 owner**（sessionStorage，刷新保留、第二窗口隔离）。刷新后同 tab 重挂 → 先 `/aux-init mode:"reclaim"` 复接原 child（绝不二次 fork）；Host 侧凭 registry/marker 验证归属、拒绝改绑父会话与外来 id。复接被拒（Host 已重启回收）→ 面板显示"辅助会话已结束" + 显式「新建辅助会话」（新资源代次，不复活）。**未实现**：120s 失联宽限的自动到期回收——无日志污染的存活信号接缝（§15.3-4 已登记为开放项）；当前由 Host 重启清扫兜底。
 
-**离线验证**：`npm run race-check`（43 项，驱动真实 controller：C01–C12 覆盖 R01/T01/T04/T05/T14/E06/E07/E12/T16/T12/§6.3 看门狗与幂等）；`scripts/e2e-isolated.mjs` **54 项**（真实栈：代次下发、reclaim 三分支、stale-generation 拒绝且资源未动、operationId 回显、归档隐藏+门禁桥+运行期上下文注入+空闲回补、**v3 fork 通道**：parentSession 结构绑定、空继承、parent-mismatch 拒绝、downgrade=full、D1 事实入模型上下文、父日志零痕迹）。
+**离线验证**：`npm run race-check`（43 项，驱动真实 controller：C01–C12 覆盖 R01/T01/T04/T05/T14/E06/E07/E12/T16/T12/§6.3 看门狗与幂等）；`scripts/e2e-isolated.mjs` **55 项**（真实栈：代次下发、reclaim 三分支、stale-generation 拒绝且资源未动、operationId 回显、归档隐藏+门禁桥+运行期上下文注入+空闲回补、**v3 fork 通道**：parentSession 结构绑定、空继承、parent-mismatch 拒绝、downgrade=full、D1 事实入模型上下文、父日志零痕迹）。
 
 
 ## 安装（全局部署到 desktop profile）
@@ -159,7 +159,7 @@ node scripts/build.mjs --half host     # 只打 Node 半侧（需重启 DSH 生�
 
 ## 已验证到什么程度
 
-**当前门（v3 + 拖放隔离，2026-10-14）**：build / smoke / verify 19 / integration 32 / **race-check 43** / **drop-check 36** / **e2e-isolated 54** 全绿，另有视觉场景 `drop-isolation.mjs` 12/12（真实 bundle + 真实 GUI）；spike（`scripts/spike-fork.mjs`，S1-S9）实证 fork(atSeq:0) 全链、形态 A append 形状（`{surfaceOp:'append'}`，agent-loop L1061 同款）、seed 事件派生 0 条模型消息、`blank=true` 孤儿不可见、selectModel 可用。下表为历史各轮验证明细（部分行属 v1/v2 时代口径）：
+**当前门（v3 + 拖放隔离，2026-10-14）**：build / smoke / verify 19 / integration 32 / **race-check 43** / **drop-check 36** / **e2e-isolated 55** 全绿，另有视觉场景 `drop-isolation.mjs` 12/12（真实 bundle + 真实 GUI）；spike（`scripts/spike-fork.mjs`，S1-S9）实证 fork(atSeq:0) 全链、形态 A append 形状（`{surfaceOp:'append'}`，agent-loop L1061 同款）、seed 事件派生 0 条模型消息、`blank=true` 孤儿不可见、selectModel 可用。下表为历史各轮验证明细（部分行属 v1/v2 时代口径）：
 
 在一个**隔离的 DSH 实例**（独立 `DSH_HOME=/tmp/...`、独立端口，用 desktop profile 的组合复制而成，不触碰你正在运行的应用）上实测通过：
 
