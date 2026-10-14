@@ -31,7 +31,8 @@ import { join } from 'node:path'
 import { assertSessionId, encodeSegment, projectionCachePath, sessionsRoot, archiveLedgerDir } from './env.ts'
 import { AuxChatError, reasonOf } from './errors.ts'
 import { delay, isActiveSessionError } from './guards.ts'
-import { MIRROR_SECTION_NAME, MIRROR_SECTION_ORDER, buildMirrorPlan } from './mirror.ts'
+import { randomUUID } from 'node:crypto'
+import { MIRROR_SECTION_NAME, MIRROR_SECTION_ORDER, MIRROR_SOURCE_KIND, buildMirrorPlan } from './mirror.ts'
 import { writeMarker, markerExists } from './registry.ts'
 import type {
   AuxCreateResult,
@@ -277,6 +278,20 @@ export async function initAuxSession(deps: HostDeps, request: AuxInitRequest): P
     )
   }
 
+  // Structural parent binding (v3): the fork channel writes `parentSession`
+  // into the child's durable header SERVER-SIDE, so when it is present it is
+  // the truth — a client claiming a different mirrorOf is refused instead of
+  // silently rebinding the child's context. Legacy plain-created sessions
+  // (no parentSession in the header) keep the old trust-the-payload behavior;
+  // the registry check above still guards reclaim.
+  const headerParent = agent.session.header?.parentSession
+  if (typeof headerParent === 'string' && headerParent !== '' && headerParent !== mirrorOf) {
+    throw new AuxChatError(
+      'aux-chat/parent-mismatch',
+      `session "${sessionId}" was forked from "${headerParent}", not from "${mirrorOf}"; refusing to initialize it against a different parent`,
+    )
+  }
+
   const plan = await buildMirrorPlan(deps, mirrorOf)
   trace?.(
     `init:plan section=${String(plan.promptSection.text.length)}chars digest=${plan.digest === undefined ? 'none' : `${String(plan.digest.messages)}msgs/${String(plan.digest.chars)}chars`}`,
@@ -300,12 +315,45 @@ export async function initAuxSession(deps: HostDeps, request: AuxInitRequest): P
     warnings.push(`the new session's cwd (${actualCwd}) differs from the mirrored session's cwd (${plan.cwd}); attaching to the mirrored workspace anyway`)
   }
 
+  // ── form-A injection: the frozen FULL committed transcript as one hidden
+  // user/message (source.kind !== 'user' → the chat view classifies it as a
+  // context node and never draws it; deriveMessages passes it to the model in
+  // full — the compaction-checkpoint pattern). Appended BEFORE the scope work
+  // so the section variant can reflect whether the injection landed.
+  let injectionDelivered = false
+  if (plan.injection !== undefined) {
+    try {
+      const append = agent.session.append
+      if (typeof append !== 'function') throw new Error('the live session exposes no append()')
+      append.call(
+        agent.session,
+        'user/message',
+        {
+          id: randomUUID(),
+          role: 'user',
+          content: [{ type: 'text', text: plan.injection }],
+          source: { kind: MIRROR_SOURCE_KIND, form: 'reference' },
+        },
+        { surfaceOp: 'append' },
+      )
+      injectionDelivered = true
+      trace?.(`init:injection ${String(plan.injection.length)}chars`)
+    } catch (error) {
+      warnings.push(`mirror: the full-history injection failed (${reasonOf(error)}); the summary section is used instead`)
+    }
+  }
+  const effectiveDowngrade: 'full' | 'summary' | 'none' = injectionDelivered
+    ? 'full'
+    : plan.downgrade === 'full'
+      ? 'summary'
+      : plan.downgrade
+
   const modules = await deps.loadDsh()
   let scopeDispose: (() => Promise<void>) | undefined
   if (typeof modules.createScope === 'function') {
     try {
       const scope = modules.createScope(deps.ctx as HostContext, agent)
-      registerMirrorSection(scope.ctx as unknown as HostAgentCtx, plan.promptSection.text, warnings)
+      registerMirrorSection(scope.ctx as unknown as HostAgentCtx, injectionDelivered ? plan.promptSection.text : plan.fallbackSection.text, warnings)
       installToolGuard(scope.ctx as unknown as HostAgentCtx, warnings)
       scopeDispose = scope.dispose
     } catch (error) {
@@ -320,7 +368,11 @@ export async function initAuxSession(deps: HostDeps, request: AuxInitRequest): P
 
   applyPermissionPreset(deps, agent, plan.permissionPreset, warnings)
   pinTitle(deps, agent, plan.title, warnings)
-  await attachToWorkspace(deps, sessionId, plan.cwd, warnings)
+  // The fork channel auto-attaches the parent's workspace (forkWorkspace +
+  // attachSession in the controller); only a legacy plain-created session
+  // still needs the manual attach that keeps the conversation factory from
+  // rendering the blank-session workspace picker.
+  if (headerParent === undefined) await attachToWorkspace(deps, sessionId, plan.cwd, warnings)
 
   try {
     await writeMarker({ sessionId, cwd: plan.cwd, createdAt }, deps.home)
@@ -330,8 +382,8 @@ export async function initAuxSession(deps: HostDeps, request: AuxInitRequest): P
 
   if (deps.hideFromSidebar) await archiveAuxSession(deps, sessionId, warnings)
 
-  trace?.(`init:ready ${sessionId}`)
-  return { info, warnings, downgrade: plan.downgrade, ...(request.mode === 'reclaim' ? { reclaimed: true } : {}) }
+  trace?.(`init:ready ${sessionId} downgrade=${effectiveDowngrade}`)
+  return { info, warnings, downgrade: effectiveDowngrade, ...(request.mode === 'reclaim' ? { reclaimed: true } : {}) }
 }
 
 /** Best-effort removal of the artifacts a half-initialized session may own. */

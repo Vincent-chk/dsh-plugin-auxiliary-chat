@@ -24,7 +24,7 @@ import {
 } from './panel/Panel.tsx'
 import { EmptyGlyph } from './panel/icons.tsx'
 import { AuxChatController, newSessionId } from './store.ts'
-import { createPlainSession, endAuxSession, initAuxSession, reclaimAuxSession } from './remote.ts'
+import { applyModelSelection, endAuxSession, forkAuxSession, initAuxSession, reclaimAuxSession } from './remote.ts'
 import { handoffToMain } from './panel/handoff.ts'
 import type {
   ClientContextLike,
@@ -303,10 +303,17 @@ export function apply(ctx: Context): void {
   const controller = new AuxChatController({
     sessions: client.sessions,
     retainSource: RETAIN_SOURCE,
-    create: async (auxSessionId, cwd, mainSessionId) => {
-      // Two-phase creation keeps the main session log untouched (R06).
-      await createPlainSession(client, auxSessionId, cwd)
-      return initAuxSession(client, auxSessionId, mainSessionId, { requestId: auxSessionId })
+    create: async (_cwd, mainSessionId) => {
+      // v3 channel: fork(atSeq:0) mints the child SERVER-SIDE with
+      // `parentSession` in its durable header (the parent binding is
+      // structural, never client-reported), inherits NO events, auto-attaches
+      // the parent workspace, and leaves the parent log untouched (R06).
+      const childId = await forkAuxSession(client, mainSessionId)
+      const outcome = await initAuxSession(client, childId, mainSessionId, { requestId: childId })
+      // Apply the parent's model snapshot through the picker's own verb;
+      // best-effort — a failure leaves the deployment default selected.
+      void applyModelSelection(client, childId, outcome).catch(() => undefined)
+      return { ...outcome, sessionId: childId }
     },
     reclaim: (auxSessionId, mainSessionId) => reclaimAuxSession(client, auxSessionId, mainSessionId),
     dispose: (auxSessionId, options) => endAuxSession(client, auxSessionId, options),

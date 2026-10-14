@@ -114,6 +114,19 @@ function readLogText(path) {
   return parts.join('')
 }
 
+/** Locate one session's log file across project keys ('' when absent). */
+function findLogPath(home, sessionId) {
+  let projects = []
+  try {
+    projects = readdirSync(join(home, 'sessions'))
+  } catch { /* none */ }
+  for (const project of projects) {
+    const candidate = join(home, 'sessions', project, sessionId, 'session.v4.jsonl.zstd')
+    if (existsSync(candidate)) return candidate
+  }
+  return ''
+}
+
 /** One authenticated RPC call over the gateway's HTTP carrier. */
 async function rpc(endpoint, args, cookie) {
   const response = await fetch(`http://127.0.0.1:${String(PORT)}/api/${endpoint}`, {
@@ -298,6 +311,63 @@ try {
     `reclaim of a never-auxiliary session is refused (${String(foreignReclaim?.result?.value?.result?.text).slice(0, 80)})`,
   )
   await rpc('commands/execute', { agentId: foreignId, line: `/aux-end ${JSON.stringify({ sessionId: foreignId })}`, submittedAttachments: [] }, cookie).catch(() => undefined)
+  // ── v3 creation channel: fork(atSeq:0) + structural parentSession +
+  // form-A full-transcript injection (the D1 fix: a fact committed by the
+  // parent BEFORE the fork must reach the child's model context).
+  const promptedMain = await rpc('session/prompt', {
+    request: {
+      requestId: 'e2e-req-main-0001',
+      sessionId: 'session-e2e-main-0001',
+      mode: 'queue',
+      content: [{ type: 'text', text: 'parent committed fact: the magic word is ZEBRA-42' }],
+    },
+  }, cookie)
+  check(promptedMain?.result?.ok === true, 'main session accepted the probe prompt')
+  await new Promise((resolve) => setTimeout(resolve, 2500))
+  const forkRes = await rpc('session/fork', { request: { sessionId: 'session-e2e-main-0001', atSeq: 0 } }, cookie)
+  const forkChild = forkRes?.result?.value?.sessionId
+  check(typeof forkChild === 'string' && forkChild.startsWith('session-'), `fork(atSeq:0) returned a server-minted child (${String(forkChild)})`)
+  if (typeof forkChild === 'string' && forkChild !== '') {
+    const childLogPath = findLogPath(home, forkChild)
+    const childLogBefore = childLogPath === '' ? '' : readLogText(childLogPath)
+    check(childLogBefore.includes('"parentSession":"session-e2e-main-0001"'), 'the child header durably carries parentSession (server-side binding)')
+    check(!childLogBefore.includes('ZEBRA-42'), 'the fork child inherited NO parent events (empty prefix — nothing can render as bubbles)')
+    const mismatch = await rpc('commands/execute', {
+      agentId: forkChild,
+      line: `/aux-init ${JSON.stringify({ sessionId: forkChild, mirrorOf: 'session-e2e-main-OTHER' })}`,
+      submittedAttachments: [],
+    }, cookie)
+    check(
+      String(mismatch?.result?.value?.result?.text ?? '').startsWith('aux-chat/parent-mismatch:'),
+      `init against a different parent is refused structurally (${String(mismatch?.result?.value?.result?.text).slice(0, 60)})`,
+    )
+    check(existsSync(childLogPath) && readLogText(childLogPath).includes('"parentSession"'), 'the refused init left the foreign-fork child untouched (no cleanup on identity refusal)')
+    const initFork = await rpc('commands/execute', {
+      agentId: forkChild,
+      line: `/aux-init ${JSON.stringify({ sessionId: forkChild, mirrorOf: 'session-e2e-main-0001' })}`,
+      submittedAttachments: [],
+    }, cookie)
+    const initForkResult = initFork?.result?.value?.result
+    check(initForkResult?.kind === 'success', `fork-child init succeeded (${String(initForkResult?.kind)}: ${String(initForkResult?.text).slice(0, 120)})`)
+    if (initForkResult?.kind === 'success') {
+      const payload = JSON.parse(initForkResult.text)
+      check(payload.downgrade === 'full', `the full committed transcript was delivered (downgrade=${String(payload.downgrade)})`)
+    }
+    const childLogAfter = readLogText(childLogPath)
+    check(childLogAfter.includes('"aux-chat-mirror"'), 'the child log carries the form-A injection (source kind aux-chat-mirror)')
+    check(childLogAfter.includes('ZEBRA-42'), 'the injection contains the parent fact committed BEFORE the fork (D1 fixed)')
+    const mainLogPath = findLogPath(home, 'session-e2e-main-0001')
+    const mainLogText = mainLogPath === '' ? '' : readLogText(mainLogPath)
+    check(!mainLogText.includes('aux-chat-mirror') && !mainLogText.includes(forkChild), 'the parent log carries no auxiliary trace (R06 holds on the fork channel)')
+    check(readArchived().includes(forkChild), 'the fork child is archived (hidden) like every auxiliary session')
+    const endFork = await rpc('commands/execute', {
+      agentId: forkChild,
+      line: `/aux-end ${JSON.stringify({ sessionId: forkChild })}`,
+      submittedAttachments: [],
+    }, cookie)
+    check(endFork?.result?.value?.result?.kind === 'success', 'the fork child is destroyed through the same close protocol')
+  }
+
   // ── PRD v2.0 T12: a close carrying a DEAD host generation is refused and
   // touches nothing; the close with the captured binding succeeds and echoes
   // its operation id.

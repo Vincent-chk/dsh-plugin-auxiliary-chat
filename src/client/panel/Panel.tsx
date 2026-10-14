@@ -372,6 +372,11 @@ export function AuxPaneBody(props: FrameworkShares & TabInfoLike & { sessionId?:
       {runtime.closeState === 'confirming' && <ConfirmInline runtime={runtime} />}
       <div className="auxc-bar">
         <span className="auxc-bar-context">{t(props, 'contextHint')}</span>
+        {ctl !== null && ctl.isMainArchived(runtime.mainSessionId) && (
+          <span className="auxc-bar-warn" role="status">
+            主会话已归档：参考历史已冻结，本辅助会话不会随归档停止。
+          </span>
+        )}
         <AuxBarAction mainSessionId={mainSessionId} auxId={auxId ?? ''} label={t(props, 'handoff')} />
       </div>
       <div className="auxc-body">

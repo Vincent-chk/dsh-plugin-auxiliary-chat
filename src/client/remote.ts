@@ -48,9 +48,16 @@ export interface EndPayload {
 /** Init-command success body. */
 interface InitReply {
   readonly ok?: boolean
-  readonly info?: { readonly cwd?: string; readonly sessionId?: string; readonly hostGeneration?: string } | undefined
+  readonly info?: {
+    readonly cwd?: string
+    readonly sessionId?: string
+    readonly hostGeneration?: string
+    readonly provider?: string
+    readonly model?: string
+    readonly reasoningEffort?: string
+  } | undefined
   readonly warnings?: readonly string[] | undefined
-  readonly downgrade?: 'summary' | 'none' | undefined
+  readonly downgrade?: 'full' | 'summary' | 'none' | undefined
   readonly reclaimed?: boolean | undefined
 }
 
@@ -111,17 +118,45 @@ function parsePayload<T>(text: string, label: string): T {
 }
 
 /**
- * Create the plain session through the official client remote.
+ * Create the auxiliary child through the official fork verb (v3 channel).
+ *
+ * `atSeq: 0` forks an EMPTY prefix: the child inherits no events (nothing can
+ * render as bubbles), its header durably carries `parentSession = mainSessionId`
+ * (server-side identity — the client never self-reports the parent), the fork
+ * auto-attaches the parent's workspace, and the parent's own log is never
+ * touched (R06). The child id is SERVER-MINTED and returned.
+ *
  * @param ctx - client root context.
- * @param sessionId - pre-generated auxiliary identity.
- * @param cwd - the main session's working directory; the new session joins the
- *   same workspace, so the panel opens a conversation instead of the
- *   blank-session workspace picker.
+ * @param mainSessionId - the parent session captured at click time.
+ * @returns the new child session id.
  */
-export async function createPlainSession(ctx: ClientContextLike, sessionId: string, cwd: string): Promise<void> {
-  const create = ctx.sessions?.create
-  if (typeof create !== 'function') throw new Error('辅助会话服务不可用（sessions.create 未装配）')
-  await create.call(ctx.sessions, { sessionId, ...(cwd === '' ? {} : { cwd }) })
+export async function forkAuxSession(ctx: ClientContextLike, mainSessionId: string): Promise<string> {
+  const fork = ctx.sessions?.fork
+  if (typeof fork !== 'function') throw new Error('辅助会话服务不可用（sessions.fork 未装配）')
+  const childId = await fork.call(ctx.sessions, { sessionId: mainSessionId, atSeq: 0 })
+  if (typeof childId !== 'string' || childId === '') throw new Error('sessions.fork 未返回子会话 id')
+  return childId
+}
+
+/**
+ * Best-effort application of the parent's model snapshot to the new child
+ * (the model picker's own verb). A failure is not fatal: the child then runs
+ * the deployment default and the panel reports the snapshot separately.
+ */
+export async function applyModelSelection(
+  ctx: ClientContextLike,
+  sessionId: string,
+  route: { provider?: string; model?: string; reasoningEffort?: string },
+): Promise<void> {
+  const selectModel = ctx.sessions?.selectModel
+  if (typeof selectModel !== 'function') return
+  if (route.provider === undefined || route.model === undefined) return
+  await selectModel.call(ctx.sessions, {
+    sessionId,
+    provider: route.provider,
+    model: route.model,
+    ...(route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort }),
+  })
 }
 
 /**
@@ -151,8 +186,11 @@ export async function initAuxSession(
   return {
     cwd: reply.info?.cwd ?? '',
     warnings: Array.isArray(reply.warnings) ? reply.warnings : [],
-    downgrade: reply.downgrade === 'none' ? 'none' : 'summary',
+    downgrade: reply.downgrade === 'full' ? 'full' : reply.downgrade === 'none' ? 'none' : 'summary',
     ...(typeof reply.info?.hostGeneration === 'string' ? { hostGeneration: reply.info.hostGeneration } : {}),
+    ...(typeof reply.info?.provider === 'string' ? { provider: reply.info.provider } : {}),
+    ...(typeof reply.info?.model === 'string' ? { model: reply.info.model } : {}),
+    ...(typeof reply.info?.reasoningEffort === 'string' ? { reasoningEffort: reply.info.reasoningEffort } : {}),
     ...(reply.reclaimed === true ? { reclaimed: true } : {}),
   }
 }

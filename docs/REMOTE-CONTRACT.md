@@ -35,8 +35,9 @@ CommandExecution = { commandId, result: { kind:'success', text?, sourceEventSeq?
 /aux-init {"sessionId":"session-<uuid>","mirrorOf":"session-<uuid>","mode":"create|reclaim"(可选),"requestId":"<id>"(可选)}
 ```
 
-- 两阶段创建：客户端先用官方 `sessions.create({sessionId, cwd})` 落一个空会话，再把 `/aux-init` 发到**该新会话自己**（`agentId` = `sessionId`）。主会话转录因此零创建日志（R06）。
-- `mirrorOf` 必填：主会话 id，**创建当帧捕获、此后冻结**（PRD v2.0 R01）。
+- **v3 创建通道**：客户端先 `sessions.fork({sessionId: 主会话, atSeq: 0})`——服务端铸造子 id、子 header 持久携带 `parentSession=主会话`（结构性归属）、**空继承**（无可画事件）、自动 attach 父工作区、父日志零写入；再把 `/aux-init` 发到**该子会话自己**（`agentId` = 子 id）。历史兼容：对无 `parentSession` 的普通会话（旧 `sessions.create` 通道）init 仍然可用。
+- `mirrorOf` 必填：主会话 id，**创建当帧捕获、此后冻结**（PRD v2.0 R01）。子 header 带 `parentSession` 时与其不符 → `aux-chat/parent-mismatch` 拒绝（服务端结构校验，不信任浏览器自报；身份类拒绝**不触发**半成品清理）。
+- 成功载荷的 `downgrade` 为三值：`full` = 主会话全量已提交转录已经由隐藏 `user/message`（`source.kind="aux-chat-mirror"`，`{surfaceOp:"append"}`，压缩检查点同款）注入子会话日志；`summary` = 超预算或注入失败，回退系统提示词摘要；`none` = `mirrorHistory:false`。
 - `mode:"reclaim"`（PRD v2.0 §7.1）：客户端带着本窗口记录的 tab→child 绑定重连（页面刷新）。Host 侧语义：
   - 已登记 ⇒ 直接返回原 `info` + `reclaimed:true`，**绝不二次创建**；`mirrorOf` 不匹配 ⇒ `aux-chat/reclaim-mismatch` 拒绝。
   - 未登记但 marker 在（插件重载恢复路径）⇒ 走完整重新初始化，返回 `reclaimed:true`。
@@ -77,8 +78,8 @@ CommandExecution = { commandId, result: { kind:'success', text?, sourceEventSeq?
 ## 客户端调用形态
 
 ```ts
-// 创建（先 sessions.create 落空会话，再发给该新会话自己的 agent）
-await ctx.sessions.create({ sessionId: auxId, cwd })
+// 创建（v3：fork 空继承拿结构性 parentSession，子 id 服务端铸造）
+const auxId = await ctx.sessions.fork({ sessionId: mainSessionId, atSeq: 0 })
 const res = await ctx.remote.commands.execute(
   auxId,
   `/aux-init ${JSON.stringify({ sessionId: auxId, mirrorOf: mainSessionId })}`,
