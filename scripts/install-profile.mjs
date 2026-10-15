@@ -18,6 +18,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -31,7 +32,7 @@ const UNINSTALL = argv.includes('--uninstall')
 const RUN_PNPM = argv.includes('--pnpm')
 const LINK_ONLY = argv.includes('--no-pnpm')
 const profileFlag = argv.indexOf('--profile-dir')
-const profileDir = profileFlag === -1 ? '/Users/a1-6/.dsh/profiles/desktop' : resolve(argv[profileFlag + 1] ?? '')
+const profileDir = profileFlag === -1 ? join(homedir(), '.dsh', 'profiles', 'desktop') : resolve(argv[profileFlag + 1] ?? '')
 
 const manifestPath = join(profileDir, 'package.json')
 if (!existsSync(manifestPath)) {

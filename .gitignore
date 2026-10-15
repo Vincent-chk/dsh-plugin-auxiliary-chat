@@ -4,3 +4,4 @@ lib/
 package-lock.json
 ._*
 .DS_Store
+.mimosa/

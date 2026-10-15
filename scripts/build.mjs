@@ -17,6 +17,7 @@
  */
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -53,7 +54,7 @@ const EXTERNAL = [
 function resolveEsbuild() {
   const candidates = [
     join(root, 'node_modules', 'esbuild'),
-    join(process.env.DSH_PROFILES_DIR ?? '/Users/a1-6/.dsh/profiles', 'node_modules', 'esbuild'),
+    join(process.env.DSH_PROFILES_DIR ?? join(homedir(), '.dsh', 'profiles'), 'node_modules', 'esbuild'),
   ]
   for (const base of candidates) {
     try {

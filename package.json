@@ -3,6 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "description": "Sidebar auxiliary chat for DeepSeek Harness: a global panel entry beside the workspace-files and new-terminal rows, hosting temporary auxiliary sessions that mirror the main session's context one way and are permanently deleted when closed.",
+  "license": "MIT",
+  "author": "Vincent-chk",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Vincent-chk/dsh-plugin-auxiliary-chat.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Vincent-chk/dsh-plugin-auxiliary-chat/issues"
+  },
+  "homepage": "https://github.com/Vincent-chk/dsh-plugin-auxiliary-chat#readme",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
