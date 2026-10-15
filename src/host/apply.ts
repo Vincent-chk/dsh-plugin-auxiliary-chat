@@ -107,8 +107,9 @@ export interface AuxChatConfig {
 const DESCRIPTIONS = {
   // Short on purpose: the Host command catalog has no visibility flag, so these
   // rows surface in every composer's "/" menu (platform limitation recorded in
-  // README "平台约束"). The payload schema stays documented in the file header
-  // comment — the menu row should say only "internal, do not invoke by hand".
+  // docs/DESIGN-NOTES.md "四个平台约束"). The payload schema stays documented in
+  // the file header comment — the menu row should say only "internal, do not
+  // invoke by hand".
   init: '内部指令：辅助会话初始化（请勿手动调用）',
   end: '内部指令：销毁辅助会话（请勿手动调用）',
 } as const
