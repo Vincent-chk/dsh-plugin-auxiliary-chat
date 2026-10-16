@@ -33,6 +33,16 @@
  *         SAME operationId once and converges silently (no warning).
  *   C19  round 3 — a dispose that keeps failing after the retry surfaces
  *         exactly one console warning and leaves no unhandled rejection.
+ *   C20  issue #2 — an occurrence release with a LIVE tab record detaches
+ *         (no dispose, reference + binding kept) and the remount of the same
+ *         tabKey RECLAIMS the same child without a second create or retain.
+ *   C21  issue #2 — a creation settling after the occurrence was released
+ *         (record alive) is KEPT and bound for the remount; the record-gone
+ *         twin stays C15's rollback.
+ *   C22  issue #2 — a superseding occurrence under the same tab id reclaims
+ *         the child, and the stale occurrence's late abort is ignored.
+ *   C23  issue #2 — a reclaim settling after a record-alive release keeps
+ *         the child alive and referenced for the next remount.
  *
  * Run: node src/client/__selfcheck__/race-check.mjs
  * @module client/__selfcheck__/race-check
@@ -79,9 +89,23 @@ function makeSessions() {
       getSnapshot: () => state,
       subscribe: () => () => undefined,
     },
-    retain: (id) => makeReference(id),
+    retain: (id) => {
+      retainCalls.push(id)
+      return makeReference(id)
+    },
   }
 }
+
+/** Every `sessions.retain` the fake served, to prove no double-retain (C20). */
+const retainCalls = []
+
+/**
+ * Committed-layout records the fake `tabsIn` serves. EMPTY by default, which
+ * routes every abort through the record-gone destructor — the pre-issue-#2
+ * behaviour the older cases assert. Cases C20+ push records to exercise the
+ * occurrence-release DETACH path.
+ */
+const sidebarRecords = []
 
 function makeReference(id) {
   const snapshot = { running: false, promptAttempted: false, pendingSubmissions: [] }
@@ -119,7 +143,7 @@ function makeSidebar() {
     active: () => undefined,
     isExpanded: () => true,
     toggleExpanded: () => {},
-    tabsIn: () => [],
+    tabsIn: (sessionId) => sidebarRecords.filter((rec) => rec.sessionId === sessionId).map((rec) => rec.tab),
     mounted: { getSnapshot: () => MAIN_A, subscribe: () => () => undefined },
   }
 }
@@ -134,6 +158,7 @@ function makeDeps() {
   const log = { create: [], reclaim: [], dispose: [] }
   const modes = { create: 'ok', reclaim: 'gone', dispose: 'ok' }
   const deferreds = []
+  const reclaimDeferreds = []
   const deps = {
     sessions: makeSessions(),
     retainSource: 'auxChatPanel',
@@ -155,6 +180,9 @@ function makeDeps() {
     },
     async reclaim(auxSessionId, mainSessionId) {
       log.reclaim.push({ auxSessionId, mainSessionId })
+      if (modes.reclaim === 'defer') {
+        return await new Promise((resolve) => reclaimDeferreds.push({ auxSessionId, resolve }))
+      }
       if (modes.reclaim === 'reclaimed') {
         return { kind: 'reclaimed', outcome: { cwd: '/w/a', warnings: [], downgrade: 'summary', hostGeneration: 'gen-host-1', reclaimed: true } }
       }
@@ -175,7 +203,7 @@ function makeDeps() {
     },
     present: () => {},
   }
-  return { deps, log, modes, deferreds }
+  return { deps, log, modes, deferreds, reclaimDeferreds }
 }
 
 // Pin the copy language: Node >=21 exposes navigator.language (en-US), which
@@ -582,6 +610,102 @@ async function readyRuntime(script = {}) {
   check('C19: a persistently failing close surfaced exactly one warning', warns.length === 1 && warns[0]?.includes('background close'), JSON.stringify(warns))
   check('C19: the warning names the session and its resource is left to the boot sweep', warns[0]?.includes(runtime.sessionId) === true, String(warns[0]))
   check('C19: no unhandled rejection escaped the protocol', unhandled === null, String(unhandled))
+}
+
+// ══ C20: issue #2 — occurrence release with a live tab record DETACHES ════
+{
+  const { controller, harness, runtime, abort } = await readyRuntime()
+  const owner = sessionMap.get('aux-chat.owner')
+  const auxId = runtime.sessionId
+  sidebarRecords.push({ sessionId: MAIN_A, tab: { id: 'tab-1', kind: 'aux-chat', contentId: 'content-1' } })
+  abort.abort() // the host recycled the occurrence (seat switch / layout sync)
+  check('C20: the runtime detached from the map', controller.tabRuntime('tab-1') === undefined, String(controller.tabRuntime('tab-1')?.phase))
+  await settle()
+  check('C20: a live tab record never disposes the child', harness.log.dispose.length === 0, JSON.stringify(harness.log.dispose))
+  check('C20: the retained reference survives the detach', controller.referenceFor(auxId) !== undefined, String(auxId))
+  check('C20: the tabKey binding survives the detach', localMap.has(`aux-chat.binding.${owner}.content-1`), JSON.stringify([...localMap.keys()]))
+  // Remount: a NEW occurrence of the SAME tab (new signal, same contentId).
+  harness.modes.reclaim = 'reclaimed'
+  const remount = new AbortController()
+  controller.ensureTabSession(remount.signal, { tabId: 'tab-1', mainSessionId: MAIN_A, tabKey: 'content-1' })
+  await settle()
+  const again = controller.tabRuntime('tab-1')
+  check('C20: the remount RECLAIMED the same child (no second create)', again?.sessionId === auxId && harness.log.create.length === 1, `${String(again?.sessionId)} / ${String(harness.log.create.length)}`)
+  check('C20: the reclaimed runtime is ready under the new occurrence', again?.phase === 'ready', String(again?.phase))
+  check('C20: the remount did not double-retain the child', retainCalls.filter((id) => id === auxId).length === 1, JSON.stringify(retainCalls))
+}
+
+// ══ C21: issue #2 — creation in flight when the occurrence is released ═════
+{
+  const harness = makeDeps()
+  harness.modes.create = 'defer'
+  const controller = new AuxChatController(harness.deps)
+  const abort = new AbortController()
+  sidebarRecords.push({ sessionId: MAIN_A, tab: { id: 'tab-42', kind: 'aux-chat', contentId: 'content-42' } })
+  controller.ensureTabSession(abort.signal, { tabId: 'tab-42', mainSessionId: MAIN_A, tabKey: 'content-42' })
+  await settle()
+  abort.abort() // occurrence released while the create round-trip is in flight
+  check('C21: the creating runtime detached', controller.tabRuntime('tab-42') === undefined, String(controller.tabRuntime('tab-42')?.phase))
+  const deferred = harness.deferreds.at(-1)
+  deferred.resolve()
+  await settle()
+  check('C21: the late child is KEPT (record alive), not rolled back', harness.log.dispose.length === 0, JSON.stringify(harness.log.dispose))
+  const owner = sessionMap.get('aux-chat.owner')
+  check('C21: the late child wrote the tabKey binding for the remount', localMap.has(`aux-chat.binding.${owner}.content-42`), JSON.stringify([...localMap.keys()]))
+  check('C21: the late child is referenced (alive outside the view tree)', controller.referenceFor(deferred.auxSessionId) !== undefined, String(deferred.auxSessionId))
+  // The symmetric record-gone case is C15: the late child of a CLOSED tab
+  // rolls back — the routing rule, not the race, decides.
+}
+
+// ══ C22: issue #2 — a superseding occurrence under the same tab id ═════════
+{
+  const harness = makeDeps()
+  const controller = new AuxChatController(harness.deps)
+  const first = new AbortController()
+  controller.ensureTabSession(first.signal, { tabId: 'tab-7', mainSessionId: MAIN_A, tabKey: 'content-7' })
+  await settle()
+  const auxId = controller.tabRuntime('tab-7')?.sessionId
+  sidebarRecords.push({ sessionId: MAIN_A, tab: { id: 'tab-7', kind: 'aux-chat', contentId: 'content-7' } })
+  // The host re-issued the tab under a NEW occurrence signal.
+  const second = new AbortController()
+  harness.modes.reclaim = 'reclaimed'
+  controller.ensureTabSession(second.signal, { tabId: 'tab-7', mainSessionId: MAIN_A, tabKey: 'content-7' })
+  await settle()
+  const runtime = controller.tabRuntime('tab-7')
+  check('C22: the new occurrence owns the runtime and RECLAIMED the child', runtime?.signal === second.signal && runtime?.sessionId === auxId, `${String(runtime?.phase)}/${String(runtime?.sessionId)}`)
+  check('C22: the supersede minted no second child', harness.log.create.length === 1, String(harness.log.create.length))
+  first.abort() // the dead occurrence's abort arrives LAST
+  await settle()
+  check(
+    'C22: the stale occurrence late abort is ignored (child still bound)',
+    controller.tabRuntime('tab-7')?.sessionId === auxId && harness.log.dispose.length === 0,
+    `${String(controller.tabRuntime('tab-7')?.sessionId)}/${String(harness.log.dispose.length)}`,
+  )
+}
+
+// ══ C23: issue #2 — reclaim in flight when the occurrence is released ══════
+{
+  const harness = makeDeps()
+  harness.modes.reclaim = 'reclaimed'
+  const controller = new AuxChatController(harness.deps)
+  const first = new AbortController()
+  controller.ensureTabSession(first.signal, { tabId: 'tab-8', mainSessionId: MAIN_A, tabKey: 'content-8' })
+  await settle()
+  const auxId = controller.tabRuntime('tab-8')?.sessionId
+  sidebarRecords.push({ sessionId: MAIN_A, tab: { id: 'tab-8', kind: 'aux-chat', contentId: 'content-8' } })
+  first.abort() // detach
+  // Remount with a DEFERRED reclaim, then release the second occurrence
+  // while the reclaim round-trip is still in flight.
+  harness.modes.reclaim = 'defer'
+  const second = new AbortController()
+  controller.ensureTabSession(second.signal, { tabId: 'tab-8', mainSessionId: MAIN_A, tabKey: 'content-8' })
+  await settle()
+  second.abort()
+  const deferred = harness.reclaimDeferreds.at(-1)
+  deferred.resolve({ kind: 'reclaimed', outcome: { cwd: '/w/a', warnings: [], downgrade: 'summary', hostGeneration: 'gen-host-1', reclaimed: true } })
+  await settle()
+  check('C23: a reclaim settling after a record-alive release KEEPS the child', harness.log.dispose.length === 0, JSON.stringify(harness.log.dispose))
+  check('C23: the child stays referenced for the next remount', controller.referenceFor(auxId) !== undefined, String(auxId))
 }
 
 // ── report ──────────────────────────────────────────────────────────────────

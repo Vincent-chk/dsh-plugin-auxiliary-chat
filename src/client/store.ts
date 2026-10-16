@@ -9,7 +9,12 @@
  *   duplicated (`tabsIn` + `focus`); 新建 is the explicit `openTab` action.
  * - 收起 / 切标签 / 切主会话 never destroy; only the tab's own close gesture
  *   removes. Decision 2026-10-16 (refactor plan v2): close is SILENT — no
- *   confirmation dialog, no risk warnings. Round 3
+ *   confirmation dialog, no risk warnings. Issue #2 (round 4):
+ *   a released OCCURRENCE (`tab.signal` abort) is not a user close either —
+ *   the host recycles occurrences on seat switches and layout recomputes, so
+ *   the abort DETACHES (the child survives for the remount of the same
+ *   tabKey to reclaim) unless the tab record left the owner session's
+ *   committed layout. Round 3
  *   (PLAN-ROUND3): the protocol is REMOVAL-FIRST — the close handler never
  *   vetoes, the framework removes the tab in the same gesture, and the
  *   dispose (destroy + archive cleanup) finishes in the background. The
@@ -326,7 +331,16 @@ export class AuxChatController {
 
   /** Bind one host tab to exactly one auxiliary session. */
   ensureTabSession(signal: AbortSignal, info: { tabId: string; mainSessionId: string | undefined; tabKey?: string }): void {
-    if (this.tabRuntimes.has(info.tabId)) return
+    const existing = this.tabRuntimes.get(info.tabId)
+    if (existing !== undefined) {
+      // The shipped TabDomain reuses one occurrence per tab id, so a same-id
+      // remount normally carries the SAME signal object. A DIFFERENT signal
+      // under the same id means the old occurrence is dead by construction:
+      // detach it (issue #2) and let the fresh runtime below take the seat —
+      // the child survives for this mount's reclaim.
+      if (existing.signal === signal) return
+      this.detachTabRuntime(info.tabId)
+    }
     const mainSessionId = info.mainSessionId
     if (mainSessionId === undefined) return
     const cwd = this.cwdOf(mainSessionId)
@@ -364,7 +378,10 @@ export class AuxChatController {
     signal.addEventListener(
       'abort',
       () => {
-        this.closeTabSession(info.tabId, 'tab closed')
+        // A superseded occurrence's late abort must not act on the runtime
+        // that replaced it — only the runtime still bound to THIS signal.
+        if (this.tabRuntimes.get(info.tabId)?.signal !== signal) return
+        this.onOccurrenceReleased(info.tabId)
       },
       { once: true },
     )
@@ -391,8 +408,16 @@ export class AuxChatController {
         return
       }
       if (!this.isCurrent(runtime, epoch) || runtime.signal.aborted) {
-        // The tab went away mid-reclaim: put the child back down.
-        if (reclaim.kind === 'reclaimed') void this.deps.dispose(hint.sessionId).catch(() => undefined)
+        if (reclaim.kind === 'reclaimed') {
+          if (this.tabRecordAlive(runtime)) {
+            // Issue #2: only the occurrence went away — keep the child this
+            // reclaim just re-attached for the remount of the same tabKey.
+            this.retainDetached(hint.sessionId)
+            return
+          }
+          // The tab record itself went mid-reclaim: put the child back down.
+          void this.deps.dispose(hint.sessionId).catch(() => undefined)
+        }
         return
       }
       if (reclaim.kind === 'reclaimed') {
@@ -430,9 +455,16 @@ export class AuxChatController {
     }
     const sessionId = created.sessionId
     if (!this.isCurrent(runtime, epoch) || runtime.signal.aborted) {
-      // A late success after the pending tab closed or was superseded rolls
-      // back the child it created and installs nothing (E06/T04/R09). The
-      // child was fully initialized by now, so /aux-end converges it.
+      if (this.tabRecordAlive(runtime)) {
+        // Issue #2: only the occurrence was released/superseded while the
+        // tab record lives — finalize the child OUTSIDE the view tree so the
+        // next mount of the same tabKey reclaims it instead of minting one.
+        this.bindDetached(runtime, sessionId, created)
+        return
+      }
+      // A late success after the pending tab CLOSED rolls back the child it
+      // created and installs nothing (E06/T04/R09). The child was fully
+      // initialized by now, so /aux-end converges it.
       void this.deps.dispose(sessionId).catch(() => undefined)
       return
     }
@@ -444,18 +476,27 @@ export class AuxChatController {
    * `undefined`) when the runtime moved on while the caller awaited.
    */
   private bindReference(runtime: AuxTabRuntime, sessionId: string, outcome: AuxCreateOutcome, epoch: number): SessionReferenceLike | undefined {
+    // Idempotent (issue #2): a remount that reclaims a detached child must
+    // REUSE the reference the detach kept alive, never retain a second one.
+    const kept = this.references.get(sessionId)
     let reference: SessionReferenceLike
-    try {
-      reference = this.deps.sessions.retain(sessionId, { source: this.deps.retainSource })
-      void reference.ready.catch(() => undefined)
-    } catch {
-      return undefined
+    if (kept !== undefined) {
+      reference = kept
+    } else {
+      try {
+        reference = this.deps.sessions.retain(sessionId, { source: this.deps.retainSource })
+        void reference.ready.catch(() => undefined)
+      } catch {
+        return undefined
+      }
     }
     if (!this.isCurrent(runtime, epoch)) {
-      try {
-        reference.release()
-      } catch {
-        /* contained at the reference layer */
+      if (kept === undefined) {
+        try {
+          reference.release()
+        } catch {
+          /* contained at the reference layer */
+        }
       }
       return undefined
     }
@@ -758,7 +799,98 @@ export class AuxChatController {
     return { live, unread, running }
   }
 
-  /** The one automatic destruction edge: the tab record disappeared. */
+  // ── occurrence release vs. user close (issue #2, round 4) ────────────────
+
+  /**
+   * Whether the owner session's committed layout still carries this tab's
+   * record. `tabsIn` reads committed layout records, not mounted occurrences,
+   * so a seat switch that released the occurrence still finds the record,
+   * while a removal (the close gesture ran, or a layout compaction dropped
+   * the tab) does not. The bias on any doubt (no sidebar face, throwing
+   * read) is KEEP: a wrongly-kept child is corrected by the close handler or
+   * the boot sweep, a wrongly-destroyed one is exactly issue #2 and cannot
+   * be recovered.
+   */
+  private tabRecordAlive(runtime: AuxTabRuntime): boolean {
+    const sidebar = this.sidebarRight
+    if (sidebar === undefined) return true
+    try {
+      return sidebar.tabsIn(runtime.mainSessionId).some(
+        (tab) => tab.id === runtime.tabId || (runtime.tabKey !== undefined && tab.contentId === runtime.tabKey),
+      )
+    } catch {
+      return true
+    }
+  }
+
+  /**
+   * The host released this tab's OCCURRENCE (`tab.signal` aborted). That
+   * abort is occurrence lifecycle, never user intent: the host recycles
+   * occurrences on seat switches and layout recomputes, and the user-close
+   * authority is `registerCloseHandler` alone (issue #2). Route by the
+   * committed record: alive → detach (the resource survives for the
+   * remount); gone → the removal-first destructor (the close gesture already
+   * ran, or the layout dropped the tab without invoking the close handler).
+   */
+  private onOccurrenceReleased(tabId: string): void {
+    const runtime = this.tabRuntimes.get(tabId)
+    if (runtime === undefined) return
+    if (this.tabRecordAlive(runtime)) this.detachTabRuntime(tabId)
+    else this.closeTabSession(tabId, 'tab closed')
+  }
+
+  /**
+   * Release one runtime's memory WITHOUT touching the resource: the child
+   * session, its retained reference and the tabKey binding all survive, so a
+   * remount of the same tabKey reclaims the SAME child (unmount only
+   * detaches, never disposes — resource ownership lives outside the view
+   * tree, so recycling an occurrence can never kill the child).
+   *
+   * Stale-window note: while detached the child stops feeding
+   * `indicators()`/unread. Acceptable because a detached pane exists only
+   * while its main session is NOT the mounted one (its header is not on
+   * screen), and a collapsed right sidebar keeps panes mounted (no release).
+   */
+  private detachTabRuntime(tabId: string): void {
+    const runtime = this.tabRuntimes.get(tabId)
+    if (runtime === undefined) return
+    this.tabRuntimes.delete(tabId)
+    runtime.unsubscribeSnapshot?.()
+    // Intentionally NOT done here: dispose, clearBinding, releaseReference,
+    // marking `disposed` — those belong to the record-gone destructor.
+    this.update()
+  }
+
+  /**
+   * Finalize a child whose runtime was detached while its tab record lives
+   * (issue #2): record the binding and keep a reference so the resource
+   * stays alive outside the view tree until the remount reclaims it.
+   */
+  private bindDetached(runtime: AuxTabRuntime, sessionId: string, outcome: AuxCreateOutcome): void {
+    runtime.sessionId = sessionId
+    runtime.cwd = outcome.cwd || runtime.cwd
+    runtime.hostGeneration = outcome.hostGeneration
+    this.retainDetached(sessionId)
+    this.writeBinding(runtime)
+  }
+
+  /** Keep (or reuse) the retained reference for a detached child. */
+  private retainDetached(sessionId: string): void {
+    if (this.references.has(sessionId)) return
+    try {
+      const reference = this.deps.sessions.retain(sessionId, { source: this.deps.retainSource })
+      void reference.ready.catch(() => undefined)
+      this.references.set(sessionId, reference)
+    } catch {
+      /* the binding hint still lets a later mount reclaim the child */
+    }
+  }
+
+  /**
+   * The one automatic destruction edge: the tab RECORD disappeared from the
+   * owner session's committed layout without the close handler having owned
+   * the cleanup (issue #2 keeps occurrence release off this path).
+   */
   closeTabSession(tabId: string, reason: string): void {
     const runtime = this.tabRuntimes.get(tabId)
     if (runtime === undefined) return
