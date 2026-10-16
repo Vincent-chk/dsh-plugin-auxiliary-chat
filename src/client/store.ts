@@ -9,8 +9,14 @@
  *   duplicated (`tabsIn` + `focus`); 新建 is the explicit `openTab` action.
  * - 收起 / 切标签 / 切主会话 never destroy; only the tab's own close gesture
  *   removes. Decision 2026-10-16 (refactor plan v2): close is SILENT — no
- *   confirmation dialog, no risk warnings (ZCode-style); the close PROTOCOL
- *   stays strict (dispose-before-removal, operation-id retry, watchdog).
+ *   confirmation dialog, no risk warnings (ZCode-style). Round 3
+ *   (PLAN-ROUND3): the protocol is REMOVAL-FIRST — the close handler never
+ *   vetoes, the framework removes the tab in the same gesture, and the
+ *   dispose (destroy + archive cleanup) finishes in the background. The
+ *   shipped tab system's ONLY preservation channel is a synchronous throw,
+ *   which the host logs at error level ("Sidebar tab close failed") — never
+ *   throwing is what makes every legitimate close console-clean. The strict
+ *   parts stay strict: captured ids, operation-id retry, watchdog.
  * - A response completing in the background marks the tab unread; focus
  *   clears it.
  *
@@ -128,7 +134,6 @@ export interface AuxTabRuntime {
   hasOwnTurn: boolean
   /** An unsent submission is queued on the child (silent close aborts it). */
   hasQueue: boolean
-  bypassNextClose: boolean
   disposed: boolean
   unsubscribeSnapshot: Disposable | undefined
   /** Model route inherited at creation (plan P1: surfaced in the fact bar). */
@@ -171,19 +176,6 @@ export interface AuxChatState {
   readonly status: string | undefined
   readonly busy: boolean
   readonly tabRuntimes: ReadonlyMap<string, AuxTabRuntime>
-}
-
-/**
- * Thrown synchronously from the shipped close handler so the framework does
- * NOT remove the tab itself: the silent close protocol owns removal and runs
- * dispose first (a throw is the only channel that preserves the tab while the
- * protocol is in flight).
- */
-export class CloseVetoError extends Error {
-  constructor() {
-    super('aux-chat: the silent close protocol owns this removal')
-    this.name = 'AuxChatCloseVeto'
-  }
 }
 
 const OWNER_KEY = 'aux-chat.owner'
@@ -356,7 +348,6 @@ export class AuxChatController {
       running: false,
       hasOwnTurn: false,
       hasQueue: false,
-      bypassNextClose: false,
       disposed: false,
       unsubscribeSnapshot: undefined,
       model: undefined,
@@ -574,35 +565,30 @@ export class AuxChatController {
   /**
    * The shipped close handler invokes this before any tab removal. Silent by
    * product decision: every close gesture starts the protocol immediately —
-   * no confirmation dialog, no risk warning. The veto keeps the tab until the
-   * protocol itself removes it (or records a failure), which is what makes
-   * "dispose before removal" possible under the shipped tab system.
+   * no confirmation dialog, no risk warning. REMOVAL-FIRST (round 3): this
+   * handler NEVER throws, so the framework removes the tab synchronously in
+   * the same gesture (exactly like its own tabs, and like ZCode) and the
+   * dispose finishes in the background. A throw would also be logged at
+   * error level by the shipped tab chrome ("Sidebar tab close failed") — the
+   * noise this protocol exists to avoid — and would break any OTHER plugin
+   * whose `openTab` replaces one of our tabs (that path calls close handlers
+   * without a catch).
    */
   handleTabClose(tab: SidebarTabLike): void {
     const runtime = this.tabRuntimes.get(tab.id)
     if (runtime === undefined) return
-    if (runtime.bypassNextClose) {
-      runtime.bypassNextClose = false
-      return
-    }
     if (runtime.phase === 'closing' || runtime.phase === 'closed') {
       // A close already owns the cleanup; the tab may go.
       return
     }
-    if (runtime.phase === 'closeFailed') {
-      // The X on a failed-close tab re-attempts the SAME close operation on
-      // the SAME resource generation (§9: 重试固定同一 operationId 与资源代次).
-      // The tab stays until that attempt settles.
-      void this.startClose(tab.id)
-      throw new CloseVetoError()
-    }
     if (runtime.sessionId === undefined) {
-      // Nothing owned yet (creating / failed): allow the removal; the abort
+      // Nothing owned yet (creating / failed / ended): allow the removal; the abort
       // listener and the late-success rollback clean any child that appears.
       return
     }
+    // ready (or a defensive-host closeFailed): take the cleanup responsibility
+    // and let the tab go — the dispose runs detached from the gesture.
     void this.startClose(tab.id)
-    throw new CloseVetoError()
   }
 
   /** Human label for the closing / failure copy: “A 的 a”. */
@@ -625,9 +611,15 @@ export class AuxChatController {
   /**
    * Silent close: the cleanup responsibility is taken synchronously (phase
    * flips to `closing` in the same task), the Host dispose runs against the
-   * CAPTURED child + host generation, and the tab is removed only after the
-   * Host acknowledged. Failures keep the tab, record the exact target, and
-   * offer 重试关闭 with the SAME operation id.
+   * CAPTURED child + host generation. REMOVAL-FIRST (round 3): under the
+   * shipped tab system the tab is normally ALREADY GONE by the time the
+   * dispose settles — the framework removed it in the close gesture and the
+   * abort listener did the runtime bookkeeping — so this continuation merely
+   * finishes the resource teardown. A failure after the tab is gone retries
+   * once with the SAME operation id (a partially torn-down host converges via
+   * its not-registered signal) and then surfaces as a warning; the
+   * closeFailed card only remains for hosts that did NOT remove the tab
+   * (defensive path, where 重试关闭 keeps its meaning).
    */
   async startClose(tabId: string): Promise<void> {
     const runtime = this.tabRuntimes.get(tabId)
@@ -645,12 +637,18 @@ export class AuxChatController {
     runtime.phase = 'closing'
     this.update() // synchronous feedback, well under the 100ms target
     const timeoutMs = this.deps.closeTimeoutMs ?? 30_000
+    let settled = false
     const watchdog: ReturnType<typeof setTimeout> = setTimeout(() => {
+      if (settled) return
       if (this.isCurrent(runtime) && runtime.phase === 'closing') {
         runtime.phase = 'closeFailed'
         runtime.closeError = msg('closeTimeout', { seconds: Math.max(1, Math.round(timeoutMs / 1000)) })
         this.update({ status: msg('statusClosing', { target: this.targetLabel(runtime) }) })
+        return
       }
+      // Removal-first background close: the tab is long gone, so the only
+      // observable left for a stuck dispose is this warning (plan AC-A3).
+      console.warn(`[aux-chat] background close of ${sessionId} (op ${operationId}) is still in flight after ${Math.max(1, Math.round(timeoutMs / 1000))}s`)
     }, timeoutMs)
     try {
       await this.deps.dispose(sessionId, {
@@ -659,35 +657,75 @@ export class AuxChatController {
       })
     } catch (error) {
       const text = describeError(error)
+      settled = true
       clearTimeout(watchdog)
       if (this.isAlreadyClosed(text)) {
         // Converged elsewhere (swept after a Host restart, or a racing close
         // finished first): the resource is gone; fall through to closed.
       } else {
-        if (!this.isCurrent(runtime)) return
+        if (!this.isCurrent(runtime)) {
+          // The tab is already removed (the normal removal-first outcome):
+          // retry the SAME operation once in the background, then warn.
+          this.retryInBackground(sessionId, operationId, runtime, text)
+          return
+        }
         runtime.phase = 'closeFailed'
         runtime.closeError = text
         this.update({ status: msg('statusCloseFailed', { target: this.targetLabel(runtime), error: text }) })
         return
       }
     }
+    settled = true
     clearTimeout(watchdog)
     this.clearBinding(runtime)
     this.releaseReference(sessionId)
     if (!this.isCurrent(runtime)) return
     runtime.disposed = true
     runtime.phase = 'closed'
-    runtime.bypassNextClose = true
     try {
       const sidebar = this.sidebarRight
-      // Bound removal: the tab is removed from ITS owner session (A), not
-      // from whatever is currently mounted (R03/R04).
+      // Bound removal (defensive hosts that kept the tab): the tab is removed
+      // from ITS owner session (A), not from whatever is currently mounted
+      // (R03/R04). Under removal-first this closeIn is a no-op — the gesture
+      // itself already removed the tab.
       if (sidebar?.closeIn !== undefined) sidebar.closeIn(runtime.mainSessionId, tabId)
       else sidebar?.close(tabId)
     } catch {
       /* the abort listener performs the same bookkeeping */
     }
     this.update()
+  }
+
+  /** Sessions whose background close already used its one retry. */
+  private backgroundRetried = new Set<string>()
+
+  /** Retry delay for a background close failure (bounded, once per session). */
+  private readonly backgroundRetryMs = 1_000
+
+  /**
+   * Removal-first failure handling: the tab is gone, so there is no surface
+   * for a card — retry the SAME operation id once (a host that partially tore
+   * down converges via its not-registered signal on the second call), then
+   * report the residue as a warning. The binding hint was already cleared by
+   * the abort bookkeeping, so a permanently orphaned child stays archived
+   * (invisible) and the next Host boot sweeps it by generation.
+   */
+  private retryInBackground(sessionId: string, operationId: string, runtime: AuxTabRuntime, firstError: string): void {
+    if (this.backgroundRetried.has(sessionId)) {
+      console.warn(`[aux-chat] background close of ${sessionId} (op ${operationId}) failed twice; leaving the archived resource for the boot sweep. Last error: ${firstError}`)
+      return
+    }
+    this.backgroundRetried.add(sessionId)
+    setTimeout(() => {
+      this.deps
+        .dispose(sessionId, { operationId })
+        .then(() => {
+          this.clearBinding(runtime)
+        })
+        .catch((retryError: unknown) => {
+          console.warn(`[aux-chat] background close retry of ${sessionId} (op ${operationId}) failed: ${describeError(retryError)}`)
+        })
+    }, this.backgroundRetryMs)
   }
 
   /** Retry a failed close: same operation id, same resource generation. */

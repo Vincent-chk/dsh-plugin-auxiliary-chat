@@ -263,12 +263,36 @@ try {
   // archive bridge lifts the hide — the row IS list-visible. Together with the
   // re-hide check below this pins the 1-per-turn flicker; it becomes 0 once
   // the S1 seam (visibility decoupled from runnability) lands.
-  let midTurnVisible = false
-  for (let i = 0; i < 100 && !midTurnVisible; i += 1) {
-    if (!readArchived().includes(auxId)) midTurnVisible = true
-    else await new Promise((resolve) => setTimeout(resolve, 80))
+  // Observability note (2026-10-16 round 3): the durable storages file
+  // COALESCES a short turn's unarchive+rearchive into one flush — the live
+  // registry set lifts for the whole turn (the gate passing below proves it)
+  // while workspace.json may never show the intermediate state. The faithful
+  // observable for the user-visible flicker is the LIVE session list the
+  // sidebar reads (session/list, filtered by the live archive set); the file
+  // remains a secondary signal. Poll both, bounded: the window spans the
+  // whole turn, and only a turn that never starts can outlast it (reported
+  // separately below by the request-boundary check).
+  const listContainsAux = async () => {
+    try {
+      const listed = await rpc('session/list', { _request: {} }, cookie)
+      const items = listed?.result?.value?.items
+      return Array.isArray(items) && items.some((row) => row?.sessionId === auxId)
+    } catch {
+      return false
+    }
   }
-  check(midTurnVisible, 'G10/WP2.3: mid-turn the archive bridge lifted the hide (the documented 1-per-turn list flicker; 0 after the S1 seam)')
+  let midTurnVisible = false
+  let observedVia = ''
+  for (let i = 0; i < 120 && !midTurnVisible; i += 1) {
+    if (!readArchived().includes(auxId)) {
+      midTurnVisible = true
+      observedVia = 'storages file'
+    } else if (await listContainsAux()) {
+      midTurnVisible = true
+      observedVia = 'live session/list'
+    } else await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+  check(midTurnVisible, `G10/WP2.3: mid-turn the archive bridge lifted the hide (via ${observedVia || 'neither observable'}; the documented 1-per-turn list flicker, 0 after the S1 seam)`)
   // The turn runs against a REAL provider: its latency varies run to run, so
   // poll the log until the request boundary appears (bounded) instead of a
   // fixed 4s wait that raced on slow turns (observed 2026-10-16).

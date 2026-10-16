@@ -366,7 +366,13 @@ export function apply(ctx: Context): void {
     return [disposeSeats, disposeConversationHole, ...hiddenRows]
   }, 'aux-chat: seats')
 
-  // Close confirmation: veto the framework removal for non-empty tabs.
+  // Silent close (removal-first, round 3): the registered handler NEVER
+  // vetoes — it starts the background dispose and returns, so the framework
+  // removes the tab in the same gesture. A synchronous throw is the shipped
+  // tab system's only preservation channel, and every such throw is logged
+  // at error level by the tab chrome ("Sidebar tab close failed"); never
+  // throwing keeps every legitimate close console-clean (and keeps other
+  // plugins' replaceTab opens from breaking on our veto).
   ctx.effect(() => {
     let dispose: Disposable | undefined
     const install = (): void => {

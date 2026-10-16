@@ -26,6 +26,13 @@
  *   C11  T16 — a refused reclaim shows `ended` and 新建 mints a NEW
  *         generation instead of reviving or re-forking.
  *   C12  T12 — the close carries the captured host generation.
+ *   C17  round 3 — removal-first: the gesture returns WITHOUT a veto, the
+ *         framework removes the tab (abort lands before the dispose
+ *         settles), and the background dispose still completes exactly once.
+ *   C18  round 3 — a dispose failure after the tab is gone auto-retries the
+ *         SAME operationId once and converges silently (no warning).
+ *   C19  round 3 — a dispose that keeps failing after the retry surfaces
+ *         exactly one console warning and leaves no unhandled rejection.
  *
  * Run: node src/client/__selfcheck__/race-check.mjs
  * @module client/__selfcheck__/race-check
@@ -178,15 +185,12 @@ setCopyLang('zh')
 const settle = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
- * One silent close gesture: the shipped handler vetoes the framework removal
- * while the protocol owns disposal + removal (decision 2026-10-16).
+ * One silent close gesture (round 3, removal-first): the shipped handler must
+ * return normally — the framework removes the tab itself while the protocol
+ * disposes in the background. Any throw fails the calling check loudly.
  */
 async function silentClose(controller, tabId) {
-  try {
-    controller.handleTabClose({ id: tabId })
-  } catch (error) {
-    if (error?.name !== 'AuxChatCloseVeto') throw error
-  }
+  controller.handleTabClose({ id: tabId })
   await settle()
 }
 
@@ -361,28 +365,28 @@ async function readyRuntime(script = {}) {
 // ══ C09: silent close never branches on content (decision 2026-10-16) ═════
 {
   const { controller, harness } = await readyRuntime()
-  let vetoedEmpty = false
+  let threwEmpty = false
   try {
     controller.handleTabClose({ id: 'tab-1', kind: 'aux-chat' })
-  } catch (error) {
-    vetoedEmpty = error?.name === 'AuxChatCloseVeto'
+  } catch {
+    threwEmpty = true
   }
-  check('C09: an empty idle tab enters the silent protocol', vetoedEmpty && controller.tabRuntime('tab-1')?.phase === 'closing', controller.tabRuntime('tab-1')?.phase)
+  check('C09: an empty idle tab enters the silent protocol without a veto', threwEmpty === false && controller.tabRuntime('tab-1')?.phase === 'closing', controller.tabRuntime('tab-1')?.phase)
   await settle()
   check('C09: the empty tab was disposed and closed', harness.log.dispose.length === 1 && controller.tabRuntime('tab-1')?.phase === 'closed', String(controller.tabRuntime('tab-1')?.phase))
   const second = await readyRuntime()
   second.runtime.hasQueue = true
   second.runtime.hasOwnTurn = true
   second.runtime.running = true
-  let vetoedBusy = false
+  let threwBusy = false
   try {
     second.controller.handleTabClose({ id: 'tab-1', kind: 'aux-chat' })
-  } catch (error) {
-    vetoedBusy = error?.name === 'AuxChatCloseVeto'
+  } catch {
+    threwBusy = true
   }
   await settle()
   const busyPhase = second.controller.tabRuntime('tab-1')?.phase
-  check('C09: a running/queued tab takes the SAME silent path (no dialog state)', vetoedBusy && busyPhase === 'closed' && second.controller.tabRuntime('tab-1')?.closeState === undefined, String(busyPhase))
+  check('C09: a running/queued tab takes the SAME silent path (no dialog state, no veto)', threwBusy === false && busyPhase === 'closed' && second.controller.tabRuntime('tab-1')?.closeState === undefined, String(busyPhase))
 }
 
 // ══ C10: a recorded reload-binding restores the ORIGINAL child (E12) ═══════
@@ -475,13 +479,13 @@ async function readyRuntime(script = {}) {
   const abort = new AbortController()
   controller.ensureTabSession(abort.signal, { tabId: 'tab-1', mainSessionId: MAIN_A, tabKey: 'content-15' })
   await settle()
-  let vetoed = false
+  let threw = false
   try {
     controller.handleTabClose({ id: 'tab-1' })
   } catch {
-    vetoed = true
+    threw = true
   }
-  check('C15: a creating tab closes without veto (nothing owned yet)', vetoed === false, String(vetoed))
+  check('C15: a creating tab closes without a veto (nothing owned yet)', threw === false, String(threw))
   abort.abort()
   await settle()
   const deferred = harness.deferreds.at(-1)
@@ -503,6 +507,81 @@ async function readyRuntime(script = {}) {
   await settle()
   const gone = controller.indicators()
   check('C16: a closed runtime leaves the indicators', gone.live === 0, JSON.stringify(gone))
+}
+
+// ══ C17: removal-first timing (round 3) ═════════════════════════════════════
+{
+  const { controller, harness, runtime, abort } = await readyRuntime()
+  let threw = false
+  try {
+    controller.handleTabClose({ id: 'tab-1' })
+  } catch {
+    threw = true
+  }
+  check('C17: the close gesture returns without a veto (the framework removes the tab)', threw === false, String(threw))
+  check('C17: the protocol took responsibility synchronously', controller.tabRuntime('tab-1')?.phase === 'closing', controller.tabRuntime('tab-1')?.phase)
+  // The framework's synchronous commit unmounts the tab right after the
+  // gesture returns — emulate it: the abort bookkeeping runs BEFORE the
+  // dispose settles (the real ordering under removal-first).
+  abort.abort()
+  check('C17: the unmount bookkeeping retired the runtime', controller.tabRuntime('tab-1') === undefined, String(controller.tabRuntime('tab-1')))
+  await settle()
+  const disposes = harness.log.dispose.filter((d) => d.auxSessionId === runtime.sessionId)
+  check('C17: the background dispose completed exactly once', disposes.length === 1, String(disposes.length))
+  // C10 deliberately leaves a SECOND window's hint under another owner; this
+  // check owns only THIS window's key.
+  const owner = sessionMap.get('aux-chat.owner')
+  check('C17: the reload-binding hint is cleared', !localMap.has(`aux-chat.binding.${owner}.content-1`), JSON.stringify([...localMap.keys()]))
+}
+
+// ══ C18: background failure retries once with the SAME operation (round 3) ═
+{
+  const { controller, harness, runtime, abort } = await readyRuntime()
+  harness.modes.dispose = 'fail' // fails once, then resets to ok
+  const warns = []
+  const origWarn = console.warn
+  console.warn = (...args) => warns.push(args.map(String).join(' '))
+  try {
+    controller.handleTabClose({ id: 'tab-1' })
+    abort.abort() // tab already removed by the framework
+    await settle()
+    await settle(1_300) // past the 1s background retry
+  } finally {
+    console.warn = origWarn
+  }
+  const disposes = harness.log.dispose.filter((d) => d.auxSessionId === runtime.sessionId)
+  const opIds = new Set(disposes.map((d) => d.options?.operationId))
+  check('C18: the failed background close retried exactly once more', disposes.length === 2, String(disposes.length))
+  check('C18: the retry reused the SAME operation id', opIds.size === 1 && [...opIds][0]?.startsWith('close-'), JSON.stringify([...opIds]))
+  check('C18: a converged retry stays fully silent (no warning)', warns.length === 0, warns.join(' | '))
+}
+
+// ══ C19: persistent failure → exactly one warning, no unhandled rejection ══
+{
+  const { controller, runtime, abort } = await readyRuntime()
+  controller.deps.dispose = async () => {
+    throw new Error('aux-chat/dispose-failed: permanent refusal')
+  }
+  const warns = []
+  const origWarn = console.warn
+  console.warn = (...args) => warns.push(args.map(String).join(' '))
+  let unhandled = null
+  const onUnhandled = (error) => {
+    unhandled = error
+  }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    controller.handleTabClose({ id: 'tab-1' })
+    abort.abort()
+    await settle()
+    await settle(1_300)
+  } finally {
+    console.warn = origWarn
+    process.off('unhandledRejection', onUnhandled)
+  }
+  check('C19: a persistently failing close surfaced exactly one warning', warns.length === 1 && warns[0]?.includes('background close'), JSON.stringify(warns))
+  check('C19: the warning names the session and its resource is left to the boot sweep', warns[0]?.includes(runtime.sessionId) === true, String(warns[0]))
+  check('C19: no unhandled rejection escaped the protocol', unhandled === null, String(unhandled))
 }
 
 // ── report ──────────────────────────────────────────────────────────────────
