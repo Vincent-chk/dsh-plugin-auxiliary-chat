@@ -54,11 +54,16 @@ signal.abort（occurrence 被宿主回收）
 | smoke | ✓ |
 | e2e-isolated | 84/84 ✓（80 + E42×3 + E43） |
 | visual：visit-aux-session | 9/9 ✓（含二轮往返：绑定不变、草稿保留、回合续跑） |
-| visual：其余场景回归 | （见下表，随分支推送更新） |
+| visual：其余场景回归 | silent-close-noise 7/7 · core-journey 12/12 · copy-walkthrough zh 6/6 + en 6/6 · mirror-live 4/4 · drop-isolation 15/15 · real-roundtrip 13/13 ✓ |
 
 关键证据（visit-aux-session 运行日志）：访问 `[辅助]` 行再返回、以及**再次**访问返回，
 pane 始终绑定同一 `data-aux-session`，composer 可输入、未提交草稿原样保留、回合持续
 输出、控制台零错误——"看一眼 = 关掉并销毁"的缺陷不复存在。
+
+场景工具随批加固（工作区 `tools/visual/`，非产品代码）：欢迎/公告模态的关闭改为
+语言无关（继续/Continue/Got it/知道了/… + Escape 兜底），real-roundtrip 的引导点击
+改为清遮罩重试、收尾重开步骤改为聚焦重试——en-US 与 real-roundtrip 此前的崩溃均
+为该脚本脆弱性，与插件改动无关（加固后 6/6、13/13 全绿）。
 
 ## 5. 残余风险与后续
 
