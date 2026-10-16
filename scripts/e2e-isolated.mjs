@@ -259,8 +259,44 @@ try {
     },
   }, cookie)
   check(prompted?.result?.ok === true, `prompt accepted on the archived auxiliary session (${String(prompted?.result?.ok)})`)
-  await new Promise((resolve) => setTimeout(resolve, 4000))
-  const auxLogText = (() => {
+  // G10/WP2.3 (documented flicker, insertion half): while the turn runs, the
+  // archive bridge lifts the hide — the row IS list-visible. Together with the
+  // re-hide check below this pins the 1-per-turn flicker; it becomes 0 once
+  // the S1 seam (visibility decoupled from runnability) lands.
+  // Observability note (2026-10-16 round 3): the durable storages file
+  // COALESCES a short turn's unarchive+rearchive into one flush — the live
+  // registry set lifts for the whole turn (the gate passing below proves it)
+  // while workspace.json may never show the intermediate state. The faithful
+  // observable for the user-visible flicker is the LIVE session list the
+  // sidebar reads (session/list, filtered by the live archive set); the file
+  // remains a secondary signal. Poll both, bounded: the window spans the
+  // whole turn, and only a turn that never starts can outlast it (reported
+  // separately below by the request-boundary check).
+  const listContainsAux = async () => {
+    try {
+      const listed = await rpc('session/list', { _request: {} }, cookie)
+      const items = listed?.result?.value?.items
+      return Array.isArray(items) && items.some((row) => row?.sessionId === auxId)
+    } catch {
+      return false
+    }
+  }
+  let midTurnVisible = false
+  let observedVia = ''
+  for (let i = 0; i < 120 && !midTurnVisible; i += 1) {
+    if (!readArchived().includes(auxId)) {
+      midTurnVisible = true
+      observedVia = 'storages file'
+    } else if (await listContainsAux()) {
+      midTurnVisible = true
+      observedVia = 'live session/list'
+    } else await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+  check(midTurnVisible, `G10/WP2.3: mid-turn the archive bridge lifted the hide (via ${observedVia || 'neither observable'}; the documented 1-per-turn list flicker, 0 after the S1 seam)`)
+  // The turn runs against a REAL provider: its latency varies run to run, so
+  // poll the log until the request boundary appears (bounded) instead of a
+  // fixed 4s wait that raced on slow turns (observed 2026-10-16).
+  const readAuxLog = () => {
     let projects = []
     try {
       projects = readdirSync(join(home, 'sessions'))
@@ -272,7 +308,12 @@ try {
       } catch { /* keep scanning */ }
     }
     return ''
-  })()
+  }
+  let auxLogText = readAuxLog()
+  for (let i = 0; i < 60 && !auxLogText.includes('"request/header"'); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    auxLogText = readAuxLog()
+  }
   check(auxLogText.includes('"step/start"'), 'the archived session produced a step/start (the gate did not block it)')
   check(auxLogText.includes('Current runtime context'), 'the FULL pre-step chain ran (runtime context injected — not the round-6 veto)')
   check(auxLogText.includes('"request/header"'), 'the turn reached the model request boundary (a gate-blocked turn never does)')
@@ -341,6 +382,7 @@ try {
   check(typeof forkChild === 'string' && forkChild.startsWith('session-'), `fork(atSeq:0) returned a server-minted child (${String(forkChild)})`)
   if (typeof forkChild === 'string' && forkChild !== '') {
     const childLogPath = findLogPath(home, forkChild)
+    let forkInheritedEntries = 0
     const childLogBefore = childLogPath === '' ? '' : readLogText(childLogPath)
     check(childLogBefore.includes('"parentSession":"session-e2e-main-0001"'), 'the child header durably carries parentSession (server-side binding)')
     check(!childLogBefore.includes('ZEBRA-42'), 'the fork child inherited NO parent events (empty prefix — nothing can render as bubbles)')
@@ -360,6 +402,9 @@ try {
       submittedAttachments: [],
     }, cookie)
     const initForkResult = initFork?.result?.value?.result
+    if (initForkResult?.kind === 'success') {
+      try { forkInheritedEntries = JSON.parse(initForkResult.text)?.inherited?.entries ?? 0 } catch { forkInheritedEntries = 0 }
+    }
     check(initForkResult?.kind === 'success', `fork-child init succeeded (${String(initForkResult?.kind)}: ${String(initForkResult?.text).slice(0, 120)})`)
     if (initForkResult?.kind === 'success') {
       const payload = JSON.parse(initForkResult.text)
@@ -375,18 +420,56 @@ try {
       check(mirrorWarnings.length === 0, `init reports no mirror warnings${mirrorWarnings.length === 0 ? '' : `: ${mirrorWarnings.join(' | ').slice(0, 200)}`}`)
     }
     const childLogAfter = readLogText(childLogPath)
+    const inheritedEntries = forkInheritedEntries
     check(childLogAfter.includes('"aux-chat-mirror"'), 'the child log carries the form-A injection (source kind aux-chat-mirror)')
     check(childLogAfter.includes('ZEBRA-42'), 'the injection contains the parent fact committed BEFORE the fork (D1 fixed)')
+    // Plan v2 P2/WP2.3 + P3/WP3.1 (E36-E38): the form-A injection is a
+    // STRUCTURED rendering (role headers per entry) and the child title stays
+    // pinned with the recognisable prefix on the real stack.
+    check(childLogAfter.includes('## User (seq'), 'E36 the form-A injection carries user role headers (structured mirror)')
+    const headerCount = (childLogAfter.match(/## (?:User|Assistant|Tool result) \(seq /g) ?? []).length
+    check(
+      headerCount >= Math.max(1, inheritedEntries),
+      `E37 every delivered entry carries a role header (${String(headerCount)} headers / ${String(inheritedEntries)} entries)`,
+    )
+    check(childLogAfter.includes('[辅助]'), 'E38 the child title carries the [辅助] prefix on the real stack')
     const mainLogPath = findLogPath(home, 'session-e2e-main-0001')
     const mainLogText = mainLogPath === '' ? '' : readLogText(mainLogPath)
     check(!mainLogText.includes('aux-chat-mirror') && !mainLogText.includes(forkChild), 'the parent log carries no auxiliary trace (R06 holds on the fork channel)')
     check(readArchived().includes(forkChild), 'the fork child is archived (hidden) like every auxiliary session')
     const endFork = await rpc('commands/execute', {
       agentId: forkChild,
-      line: `/aux-end ${JSON.stringify({ sessionId: forkChild })}`,
+      line: `/aux-end ${JSON.stringify({ sessionId: forkChild, operationId: 'op-e2e-dup' })}`,
       submittedAttachments: [],
     }, cookie)
     check(endFork?.result?.value?.result?.kind === 'success', 'the fork child is destroyed through the same close protocol')
+    // E39: silent-close idempotency — a repeated close with the SAME operation
+    // id converges instead of erroring (the client relies on this to treat
+    // "already gone" as success without asking the user anything).
+    const endForkAgain = await rpc('commands/execute', {
+      agentId: forkChild,
+      line: `/aux-end ${JSON.stringify({ sessionId: forkChild, operationId: 'op-e2e-dup' })}`,
+      submittedAttachments: [],
+    }, cookie)
+    check(
+      String(endForkAgain?.result?.value?.result?.text ?? '').startsWith('aux-chat/not-registered:'),
+      'E39 a repeated close after full destroy converges via the not-registered signal (the client maps it to success)',
+    )
+    // E40: destruction is complete — the hidden row leaves the archive set and
+    // the log directory is gone (silent close must still be a FULL delete).
+    check(readArchived().includes(forkChild) === false, 'E40a the destroyed child leaves the archive set')
+    check(findLogPath(home, forkChild) === '', 'E40b the destroyed child log directory is removed')
+    // E41: an unknown id is refused with the convergence signal the client
+    // recognises (aux-chat/not-registered), never a silent success.
+    const endForeign = await rpc('commands/execute', {
+      agentId: forkChild,
+      line: `/aux-end ${JSON.stringify({ sessionId: 'session-never-created-e2e' })}`,
+      submittedAttachments: [],
+    }, cookie)
+    check(
+      String(endForeign?.result?.value?.result?.text ?? '').startsWith('aux-chat/not-registered:'),
+      `E41 an unknown id is refused with the not-registered signal (${String(endForeign?.result?.value?.result?.text).slice(0, 60)})`,
+    )
   }
 
   // ── over-budget parent: the window must be a NEWEST TAIL, and the mirror
@@ -456,8 +539,15 @@ try {
         check((payload.inherited?.omitted ?? 0) >= 1, `earlier entries are counted as omitted (${String(payload.inherited?.omitted)})`)
         check((payload.inherited?.entries ?? 0) >= 1, `the newest entries are delivered (${String(payload.inherited?.entries)})`)
       }
-      const longLogPath = findLogPath(home, longChild)
-      const longLog = longLogPath === '' ? '' : readLogText(longLogPath)
+      // The injection is appended (and flushed) asynchronously from the init
+      // command's return; poll briefly instead of racing the flush.
+      let longLogPath = findLogPath(home, longChild)
+      let longLog = longLogPath === '' ? '' : readLogText(longLogPath)
+      for (let i = 0; i < 20 && !longLog.includes('容量上限'); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        longLogPath = findLogPath(home, longChild)
+        longLog = longLogPath === '' ? '' : readLogText(longLogPath)
+      }
       const newestLabel = `TAIL-MARKER-${String(committed).padStart(2, '0')}`
       check(longLog.includes(newestLabel), `the newest parent fact is inside the delivered window (${newestLabel})`)
       check(!longLog.includes('TAIL-MARKER-01'), 'the oldest parent fact was dropped by the budget')

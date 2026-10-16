@@ -273,3 +273,95 @@ src/host/__selfcheck__/mirror-window-check.mjs   尾窗预算自检（23 项）
 ## License
 
 MIT
+
+---
+
+# v4 改造台账（2026-10-16，体验改造规划 v2 执行记录）
+
+## 决策（产品裁决，优先级高于历史 PRD）
+
+1. **划词引用链路不做**；`/side` 维持裸命令（不带 prompt 直发）。作为未来可选项保留，不进入本插件迭代。
+2. **关闭静默化**：移除关闭确认条、"不再询问"偏好与全部关闭前风险提示句；
+   关闭手势直接进关闭协议（abort→dispose→移标签）。**协议健壮性不降级**：operationId
+   幂等、closeFailed 卡+重试、30s 看门狗、代次守卫全部保留（race-check C05–C16）。
+   误触损失风险按决策接受；补偿仅 host 台账留痕（见改造规划风险 R3）。
+3. 其余风险选型按规划推荐：HideChannel 接缝预备、窄屏单栏、镜像结构化、seams 需求文档。
+
+## 文案治理（P0）
+
+- 全量用户文案收敛到 `src/locale.ts`（zh/en 各 100+ 键，含状态卡/继承栏/回传/错误/命令描述）；
+  `scripts/copy-check.mjs` 门禁：词典外汉字=0、zh/en 键集相等、零风险句（永久删除/无法恢复/
+  永久销毁/将被丢弃）。
+- `scripts/copy-truth-check.mjs`：六个状态面（creating/closing/closeFailed/ended/继承栏/handoff）
+  的每条文案键绑定一个行为证明标记（测试文件内 `copy-truth:` 注释），文案与行为不再脱节。
+- 顶部状态栏改为**纯继承事实播报**：条数/字符/降级说明 + 模型与权限继承来源（`inhModel`），
+  不含任何风险子句。
+
+## 静默关闭的实现边界
+
+- `handleTabClose` 仍抛 `CloseVetoError`：这是宿主标签系统下"先销毁后移标签"的唯一通道，
+  与"是否询问用户"无关；静默指无对话框、无警告文案。
+- 队列/运行中回合随 abort 取消；`closeFailed` 时标签保留并可重试同一 operationId。
+- destroy 路径新增归档集清理（`unarchiveIfArchived`），销毁后不再在归档集留残影（e2e E40a）。
+
+## HideChannel（P2/WP2.2）
+
+- `resolveHideChannel(deps)`：配置 `hideChannel`（auto/archive/native）× 宿主原生可见性面
+  （`sessionVisibility` 服务，S1 接缝）解析通道；native 缺失或拒绝时回退 archive-bridge 并留
+  warning/trace。idle 重归档在 native 通道下自门控跳过。
+- 活门禁 `npm run hide-check`（H1–H7）：解析顺序、native 不归档、失败回退、强制配置。
+
+## 窄屏单栏（P2/WP2.1）
+
+- Path A 列在宽度不足时切单栏模式（`data-aux-single="1"` + 返回主对话按钮），死路卡片删除；
+  Path B 窄屏仍由宿主右栏自决（autoFullscreen），文档化不越权。
+
+## 镜像结构化（P3/WP3.1）
+
+- form-A 注入本就带角色头（`## User/Assistant/Tool result (seq N)`）；本轮补两块缺失结构：
+  reasoning 省略标记 `[reasoning omitted ×N]` 与多工具调用计数标记 `[tool calls ×N: names]`
+  （mirror-check W08–W15）。digest 降级路径的角色前缀维持原状。
+
+## 门禁计数（改造后）
+
+verify 30 · race-check 51 · drop-check 36 · mirror-check 31 · hide-check 7 · integration 32 ·
+e2e-isolated 80 · visual ≥50（场景：core-journey/real-roundtrip/multi-unread/copy-walkthrough
+(zh+en)/drop-isolation/open-idempotent/pane-layout/mirror-live/attachment-isolation/
+shipped-sidebar；narrow-single 因 DSH 0.2.x 禁用官方右栏后宿主 Web 无法启动而记为验证偏差，
+见 docs/REVIEW-REFACTOR-2026-10-16.md §5）。
+
+## v5 台账 · 第三轮（2026-10-16 下午）：静默关闭去噪 + 上游草案
+
+- **触发**：二轮复核实锤两问题（sidebarRight 硬注入阻断 Path A；每次合法关闭一条
+  error 级 "Sidebar tab close failed" 控制台噪声）。规划与验收标准：
+  `docs/PLAN-ROUND3-SILENT-CLOSE-DENOISE.md`。
+- **协议变更**：关闭处理器由 veto（抛错保留标签→后台销毁→程序化移除）改为
+  **removal-first**（永不抛错→框架同步移除标签→后台销毁）。删除
+  `CloseVetoError`/`bypassNextClose`；失败后台路径 = 同 operationId 重试一次 →
+  console.warn → 宿主重启清扫兜底。防御面（标签未被宿主移除的非常规情形）
+  维持 closing/closeFailed 卡片与文案，零字典改动。
+- **附带修复（同一改动消除的隐患）**：`place()` 的 replaceTab 路径无 try/catch，
+  旧协议下我们的否决可炸掉其他插件的 replaceTab 打开；新协议永不抛错，隐患归零
+  （上游草案 U2 一并记录）。
+- **根因补证**：10 包硬注入清单 + ui-chat 消费面（仅 3 处可选链接便利）→
+  `docs/UPSTREAM-ISSUES.md` U1/U2/U3。
+- **门禁**：race 62/62（新增 C17/C18/C19）；verify 30；drop 36；mirror 31；hide 7；
+  integration 32；smoke；typecheck；visual silent-close-noise 7/7 ×2（即时消失
+  204/219ms、零 veto 噪声、无卡片、无行残留）+ core-journey 10/10 + real-roundtrip
+  9/9（新协议下真模型往返全程通过）；e2e 80/80 ×2（G10 观测面升级为实时 session/list，
+  与落盘刷盘时序解耦）。
+
+## v6 台账 · 2026-10-16 晚：顶栏去说明文字（页面精简）
+
+- **用户决定**：删除顶栏继承说明句（含模型后缀与悬停详情），保持页面简洁。
+- **实现**：`Panel.tsx` 删除 `inheritanceStatus()`/`sizeText()`；顶栏只保留
+  真实镜像警告、主会话归档提示、「复制结论到主会话」动作；继承结果改为不可见
+  属性 `data-aux-inherited` / `-model` / `-chars`。
+- **字典**：删除 13 键 × 2 语言（86 → 73，zh/en 对齐）。
+- **门禁**：copy-truth 的 `inheritance-bar` 面 → `pane-bar` 面（keys:
+  mirrorWarnings/mainArchived，proof: core-journey.mjs）；旧标记从
+  `mirror-window-check.mjs` 移除。
+- **真机场景**：core-journey / real-roundtrip / copy-walkthrough / drop-isolation /
+  mirror-live 五处断言改为"无说明文字 + 属性可读"。
+- **顺带纠正**：README「关闭即永久删除」条目更新为 removal-first 后的真实行为
+  （旧文仍写"失败保留标签 + 重试关闭"，自第三轮起已不成立）。

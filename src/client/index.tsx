@@ -27,6 +27,7 @@ import { installDropRouter } from './drop-router.ts'
 import { AuxChatController, newSessionId } from './store.ts'
 import { applyModelSelection, endAuxSession, forkAuxSession, initAuxSession, reclaimAuxSession } from './remote.ts'
 import { handoffToMain } from './panel/handoff.ts'
+import { zh, en, copy as copyKey, msg, setCopyLang, type CopyLang } from '../locale.ts'
 import type {
   ClientContextLike,
   Disposable,
@@ -55,30 +56,6 @@ const OFFICIAL_RIGHT_SIDEBAR = '@deepseek-ai/dsh-client-ui-sidebar-right'
 
 /** Grace period before the fallback claims the seat on a failed shipped row. */
 const OFFICIAL_SEAT_GRACE_MS = 3_000
-
-/**
- * Locale dictionary (key set asserted by `scripts/smoke.mjs` — extend both).
- */
-const zh: Record<string, string> = {
-  panel: '辅助会话',
-  empty: '镜像当前主会话的上下文，关闭后永久删除。',
-  close: '结束并销毁辅助会话',
-  handoff: '复制结论到主会话',
-  creating: '正在创建辅助会话…',
-  retry: '重试',
-  openNew: '新建辅助会话',
-  contextHint: '临时会话 · 已引用主会话上下文 · 关闭后无法恢复',
-}
-const en: Record<string, string> = {
-  panel: 'Side chat',
-  empty: 'Mirrors the main conversation; deleted permanently when closed.',
-  close: 'End and destroy the side chat',
-  handoff: 'Copy conclusion to the main chat',
-  creating: 'Creating side chat…',
-  retry: 'Retry',
-  openNew: 'New side chat',
-  contextHint: 'Temporary · references the main context · gone when closed',
-}
 
 /** Inject the plugin stylesheet once per document. */
 function injectStyles(): void {
@@ -253,7 +230,7 @@ function installSeats(ctx: Context, client: ClientContextLike, controller: AuxCh
 }
 
 function t(key: string): string {
-  return zh[key] ?? key
+  return copyKey(key)
 }
 
 /** Root slot id for the conversation hole (shared by both panel bodies). */
@@ -275,7 +252,20 @@ export function apply(ctx: Context): void {
       translate = undefined
     }
     const disposeLocale = client.locale.register(LOCALE_NS, { zh, en })
-    return [disposeLocale]
+    // Non-React modules (store/handoff) format copy at event time, so the
+    // active language is mirrored into locale.ts and re-probed on change.
+    const probe = (): void => {
+      const language = ((globalThis as { navigator?: { language?: string } }).navigator?.language ?? '').toLowerCase()
+      const lang: CopyLang = language === '' || language.startsWith('zh') ? 'zh' : 'en'
+      setCopyLang(lang)
+    }
+    probe()
+    const win = globalThis as {
+      addEventListener?(type: string, listener: () => void): void
+      removeEventListener?(type: string, listener: () => void): void
+    }
+    win.addEventListener?.('languagechange', probe)
+    return [disposeLocale, () => win.removeEventListener?.('languagechange', probe)]
   }, 'aux-chat: registry + dictionaries')
 
   /**
@@ -376,7 +366,13 @@ export function apply(ctx: Context): void {
     return [disposeSeats, disposeConversationHole, ...hiddenRows]
   }, 'aux-chat: seats')
 
-  // Close confirmation: veto the framework removal for non-empty tabs.
+  // Silent close (removal-first, round 3): the registered handler NEVER
+  // vetoes — it starts the background dispose and returns, so the framework
+  // removes the tab in the same gesture. A synchronous throw is the shipped
+  // tab system's only preservation channel, and every such throw is logged
+  // at error level by the tab chrome ("Sidebar tab close failed"); never
+  // throwing keeps every legitimate close console-clean (and keeps other
+  // plugins' replaceTab opens from breaking on our veto).
   ctx.effect(() => {
     let dispose: Disposable | undefined
     const install = (): void => {
@@ -429,7 +425,7 @@ export function apply(ctx: Context): void {
     const definition: ShortcutDefinitionLike = {
       id: 'aux-chat.toggle',
       label: () => t('panel'),
-      aliases: ['side chat', '辅助会话'],
+      aliases: ['side chat', copyKey('sideAlias')],
       defaults: {
         'desktop:macos': { code: 'KeyS', modifiers: ['meta', 'alt'] },
         'desktop:windows': { code: 'KeyS', modifiers: ['control', 'alt'] },
@@ -500,7 +496,7 @@ export function apply(ctx: Context): void {
             const target = id ?? officialSeat()?.mounted?.getSnapshot() ?? controller.mainSessionId
             if (controller.isAuxSession(target)) {
               // PRD copy: nesting is refused; nothing is sent.
-              throw new Error('辅助会话中无法再开启辅助会话，请先返回主会话。')
+              throw new Error(msg('sideNested'))
             }
             controller.openOrFocus(target)
           },

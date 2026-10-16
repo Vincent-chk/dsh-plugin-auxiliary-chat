@@ -842,7 +842,8 @@ for (const hide of [false, true]) {
   }
 }
 
-// ── summary ─────────────────────────────────────────────────────────────────
+
+// ── summary ────────────────────────────────────────────────────────────────
 rmSync(scratch, { recursive: true, force: true })
 console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'} — ${failures} failure(s)`)
 process.exit(failures === 0 ? 0 : 1)

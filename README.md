@@ -1,47 +1,59 @@
 # DSH 辅助会话 · Auxiliary Chat
 
-> [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件：在当前会话窗口右侧开一列临时"草稿会话"。主对话在左，辅助会话在右——随手问、随手删，主会话分毫不动。
+> [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件：在主对话旁边开一列"草稿会话"。随手问、随手关，主对话分毫不动。
 
-## 为什么需要它
+## 它解决什么问题
 
-调试到一半，想问一句"这段代码为什么这么写"；或者让模型先润色一版文案，满意了再放进主对话——这类不值得进入主对话历史的小问题，现在有了去处：开一个辅助会话，它带着主会话的上下文开工，问完关掉就永久消失，主会话干干净净。
+有些问题值得问模型，但不值得写进主对话的历史：这段代码为什么这么写、帮我把这版文案润色一下、这个报错到底什么意思……问完就过去了，不需要在主对话里留下痕迹。
 
-## 核心特性
+开一个辅助会话就行。它带着主会话的上下文开工，回答只留在自己那一列；用完了关掉，它连同会话记录一起消失——主对话从头到尾干干净净。
 
-### 并排分栏，不打断主对话
+## 怎么用
 
-- ChatGPT 式布局：主对话在左、辅助会话在右，同时可见；收起即隐藏，不切换页面
-- 多种入口：右侧栏「辅助会话」入口或 tab 栏 `+`、桌面快捷键 `⌘⌥S`（Win/Linux `Ctrl+Alt+S`）、主输入框 `/side` 命令
-- 可以开多条辅助会话，各自独立标签、编号区分；收起、切换都只是隐藏，不会误删
+### 打开
 
-### 上下文单向继承，聊天页保持干净
+四种方式，任选一种：
 
-- 辅助会话"知道"主会话聊了什么：创建瞬间把主会话已提交的对话一次性快照给模型
-- 但聊天页面是全空白的——没有重复的历史气泡，只有你接下来问的内容
-- 主会话完全无感：日志字节级不变，看不到任何辅助会话的痕迹
-- 超长会话自动截取最近的记录（默认 100k 字符预算），面板会如实显示继承了什么，例如：`已继承主会话最近 214 条 · 99.8k 字符（较早 353 条超出预算）`
+| 方式 | 操作 |
+| --- | --- |
+| 右侧栏入口 | 打开右侧边栏，点「辅助会话」 |
+| 标签栏 | 右侧栏标签行的 `+`，选择「辅助会话」 |
+| 快捷键 | `⌘⌥S`（Windows / Linux 为 `Ctrl+Alt+S`） |
+| 命令 | 在主输入框输入 `/side` |
 
-### 完整能力，独立配置
+### 提问
 
-- 与主会话相同的完整工具能力，共享同一工作目录，产出的文件保留在工作区
-- 模型与权限预设创建时继承主会话，之后可在面板内独立修改
-- 回复在后台运行时标签显示 spinner，完成标记未读，实际看到后清除
+辅助会话有自己的输入框，直接问就好。它已经继承了主会话的内容、工作目录、模型与权限预设；你还可以在面板里单独给它换模型、换权限，怎么改都不会影响主会话。
 
-### 关闭即永久删除
+### 把结论带回主对话
 
-- 关闭标签 = 会话日志、缓存、标记文件全部清除，不留痕迹
-- 有内容、正在回复或有待发消息的标签，关闭前会请求确认
-- 默认不出现在左侧会话列表与搜索中，不污染侧栏
+点顶部的「复制结论到主会话」，内容会作为**草稿**填进主输入框，由你确认之后再发送。插件不会替你在主会话里发任何消息。
 
-### 严格单向，绝不串门
+### 拖文件
 
-- 「复制结论到主会话」只把文本作为草稿插入主输入框，由你确认后才发送
-- 拖文件进辅助面板只进辅助会话，拖到主列只进主会话——按投放位置路由
-- 页面刷新后自动重连原会话；若宿主已回收，面板会明确告知并提供一键新建
+拖进辅助面板，文件只进辅助会话；拖到主对话，只进主会话。按你放手的位置决定，不会两头都进。
+
+### 开多条
+
+每条辅助会话是独立标签，自动编号区分。收起右栏、切换标签都只是隐藏，不会误删。
+
+### 关闭
+
+点标签上的关闭，它立刻消失：不弹确认框，也不问风险提示。会话日志、缓存与登记信息一并清除，不留痕迹。
+
+## 特性
+
+- **并排分栏**——主对话在左、辅助会话在右，同时可见，不用来回切页面。
+- **继承上下文，页面保持干净**——创建那一刻，把主会话已提交的内容一次性交给辅助会话的模型；辅助会话自己的聊天页从空白开始，没有重复的历史气泡。内容过长时自动取最近的部分（默认 10 万字符预算）。顶栏保持简洁，只有真出现镜像异常或主会话已归档时才提示。
+- **能力完整**——与主会话相同的工具能力，共享同一工作目录，产出的文件留在工作区。
+- **状态一眼可见**——后台回复时标签显示运行指示；回复完成而你没在看时标记未读，看到即清除。
+- **严格单向，绝不串门**——不会主动往主会话发消息，也不会把辅助会话的内容混进主对话。
+- **关闭即清除**——辅助会话自身的痕迹（日志、缓存、登记）全部删除；工作区里由它产出的**文件保留**。
+- **刷新不丢**——页面刷新后自动重连原来的会话；如果宿主已经回收了它，面板会明确告诉你，并提供一键新建。
 
 ## 安装
 
-需要 Node ≥ 22。
+需要 Node ≥ 22，以及已安装的 DeepSeek Harness。
 
 ```bash
 git clone https://github.com/Vincent-chk/dsh-plugin-auxiliary-chat.git
@@ -50,47 +62,42 @@ npm install --no-audit --no-fund
 
 node scripts/build.mjs                              # 构建 host + client 两侧
 node scripts/smoke.mjs                              # 契约自检
-node scripts/install-profile.mjs                    # 干跑：只打印将做的改动
-node scripts/install-profile.mjs --apply --no-pnpm  # 写入 desktop profile（先备份，目录链接，不动 lockfile）
+node scripts/install-profile.mjs                    # 干跑：只打印将要做的改动
+node scripts/install-profile.mjs --apply --no-pnpm  # 写入 desktop profile（先备份）
 ```
 
-装好后**重启 DeepSeek Harness** 并刷新页面。卸载：`node scripts/install-profile.mjs --uninstall --apply --no-pnpm`。
+装好后重启 DeepSeek Harness 并刷新页面。
 
-> desktop profile 由 Electron 载体专属管理，`dsh plugin --profile desktop add` 会被 CLI 硬拒；安装脚本做的是同一件事（写 `dependencies` + `dsh.profile.bundles`）。
+卸载：`node scripts/install-profile.mjs --uninstall --apply --no-pnpm`
+
+> desktop profile 由 Electron 载体专属管理，`dsh plugin --profile desktop add` 会被 CLI 拒绝；安装脚本做的是同一件事（写 `dependencies` 与 `dsh.profile.bundles`），并会先备份、使用目录链接、不改动 lockfile。
 
 ## 配置
 
-Cordis 插件配置，共三项：
-
 | 配置 | 默认 | 说明 |
-|---|---|---|
-| `hideFromSidebar` | `true` | 辅助会话创建后立即归档，不出现在会话列表与搜索中 |
-| `mirrorHistory` | `true` | 是否镜像主会话内容（对话记录、系统提示词、动态上下文）；`false` 则只保留 cwd、模型路由、权限预设等事实信息 |
-| `mirrorMaxChars` | `100000` | 全量镜像的字符预算；超出取最近记录，最新一条都放不下时回退摘要 |
+| --- | --- | --- |
+| `hideFromSidebar` | `true` | 辅助会话创建后不出现在左侧会话列表与搜索中 |
+| `mirrorHistory` | `true` | 是否把主会话内容交给辅助会话（对话记录、系统提示词、动态上下文）；关掉则只继承工作目录、模型路由、权限预设 |
+| `mirrorMaxChars` | `100000` | 继承内容的字符预算；超出时取最近的记录，连最新一条都放不下时回退为摘要 |
+| `hideChannel` | `auto` | 隐藏方式：优先使用宿主提供的原生可见性接口，没有则回退到归档方式；也可强制 `archive` / `native` |
 
-## 已知边界
+## 已知限制
 
-- 「仅看归档」过滤器下仍能看到辅助会话；回复运行期间列表行短暂可见
-- `/aux-init`、`/aux-end` 是内部命令，可能出现在 "/" 菜单里（平台限制），误触无害
-- 上下文继承是创建时的一次性快照；主会话后续新增内容，需关闭重开才会带上
-- 删除依赖当前 DSH 磁盘布局；若未来版本改变布局，关闭会退化为"停止会话但不删文件"并留日志
+- 回合运行期间，辅助会话可能短暂出现在左侧会话列表里；在「仅看归档」过滤器下也能看到——这是平台目前还没有"隐藏但可运行"接口所致。
+- `/aux-init`、`/aux-end` 是插件内部命令，可能出现在 `/` 命令菜单中，误触无害。
+- 上下文继承是**创建那一刻的快照**：主会话之后新增的内容不会自动补进来，关掉重开即可带上。
+- 删除依赖当前 DSH 的磁盘布局；若未来版本改动布局，关闭会退化为"停止会话但不删文件"，并在日志中记录。
 
-## 开发
+## 开发者
 
-```bash
-node scripts/build.mjs --half client    # 只打浏览器侧，保存后 ~500ms 热更
-node scripts/build.mjs --half host      # 只打 Node 侧，需重启 DSH 生效
+代码分两半：`src/host/`（会话登记、上下文镜像、创建与销毁、命令通道）与 `src/client/`（分栏面板、多标签、拖放路由、界面状态）；两侧共享的冻结契约在 `src/contract.ts`。
 
-npm run verify                          # 产物与 manifest 硬条件
-npm run race-check                      # 关闭协议竞态自检
-npm run drop-check                      # 拖放隔离自检
-npm run mirror-check                    # 上下文尾窗预算自检
-node scripts/e2e-isolated.mjs           # 隔离实例端到端（自建一次性 DSH_HOME，不碰运行中的应用）
-```
+- DSH API 实证记录：[docs/VERIFIED-API.md](docs/VERIFIED-API.md)
+- 浏览器 ↔ Host 命令契约：[docs/REMOTE-CONTRACT.md](docs/REMOTE-CONTRACT.md)
+- 平台约束、设计取舍与验证记录：[docs/DESIGN-NOTES.md](docs/DESIGN-NOTES.md)
+- 希望上游补齐的平台能力：[docs/SEAM-REQUEST.md](docs/SEAM-REQUEST.md)
 
-代码结构：`src/host/`（会话登记、上下文镜像、创建与销毁、命令通道）、`src/client/`（分栏面板、多标签、拖放路由、本地状态）、`src/contract.ts`（两侧共享的冻结契约）。
-
-> 平台约束分析、设计取舍与完整验证台账见 [docs/DESIGN-NOTES.md](docs/DESIGN-NOTES.md)；已实证的 DSH API 参考见 [docs/VERIFIED-API.md](docs/VERIFIED-API.md)，浏览器↔Host 命令契约见 [docs/REMOTE-CONTRACT.md](docs/REMOTE-CONTRACT.md)。
+构建与自检脚本都在 `scripts/`：`npm run verify`、`npm run race-check`、`npm run drop-check`、`npm run mirror-check`、`node scripts/e2e-isolated.mjs`。
 
 ## License
 

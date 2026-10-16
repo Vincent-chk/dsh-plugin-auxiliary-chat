@@ -15,6 +15,7 @@
  * @module client/panel/handoff
  */
 import type { ClientContextLike, ConversationLike, SessionBindingLike, SessionInputLike } from '../types.ts'
+import { msg } from '../../locale.ts'
 import { describeError } from '../store.ts'
 
 /** Outcome of one handoff attempt, rendered as the panel status line. */
@@ -114,11 +115,11 @@ export async function handoffToMain(
 ): Promise<HandoffReport> {
   const auxBinding = attempt(() => ctx.sessions.binding(auxSessionId))
   if (auxBinding === undefined) {
-    return { ok: false, message: '无法回传：辅助会话当前没有本地绑定。' }
+    return { ok: false, message: msg('handoffNoBinding') }
   }
   const text = latestAssistantText(auxBinding)
   if (text === undefined) {
-    return { ok: false, message: '无法回传：辅助会话还没有助手结论。' }
+    return { ok: false, message: msg('handoffNoConclusion') }
   }
 
   const targetCtx =
@@ -133,16 +134,16 @@ export async function handoffToMain(
     try {
       input.setDraft(text)
       if (typeof input.notify === 'function') {
-        input.notify('info', '辅助会话结论已作为草稿插入输入框。')
+        input.notify('info', msg('handoffNotify'))
       }
-      return { ok: true, message: '结论已插入主会话输入框（草稿，需手动发送）。' }
+      return { ok: true, message: msg('handoffDrafted') }
     } catch (error) {
       const copied = await copyToClipboard(text)
       return {
         ok: copied,
         message: copied
-          ? `写入输入框被拒绝（${describeError(error)}），已复制到剪贴板，请手动粘贴。`
-          : `写入输入框被拒绝（${describeError(error)}），剪贴板也不可用。`,
+          ? msg('handoffClipboard', { error: describeError(error) })
+          : msg('handoffClipboardNoCb', { error: describeError(error) }),
       }
     }
   }
@@ -151,7 +152,7 @@ export async function handoffToMain(
   return {
     ok: copied,
     message: copied
-      ? '输入机不可用，结论已复制到剪贴板，请手动粘贴到主会话。'
-      : '输入机与剪贴板都不可用，无法回传结论。',
+      ? msg('handoffNoInputMachine')
+      : msg('handoffNothing'),
   }
 }

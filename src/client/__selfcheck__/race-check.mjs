@@ -8,29 +8,37 @@
  * screenshot can prove:
  *
  *   C01  R01 — the parent captured at mount never follows the navigation.
- *   C02  T01/V10 — a close confirmed AFTER switching to B still targets A/a
- *         (dispose + closeIn both bound to the captured ids) and the confirm
+ *   C02  T01/V10 — a SILENT close AFTER switching to B still targets A/a
+ *         (dispose + closeIn both bound to the captured ids) and the close
  *         copy names A, not B.
  *   C03  E06/T04 — a creation that settles after its pending tab was closed
  *         is rolled back and installs nothing.
  *   C04  T05 — a late continuation cannot clobber a NEWER instance opened
  *         under the same tab id; the old resource is released.
- *   C05  T14 — ten concurrent confirms produce exactly one dispose chain.
+ *   C05  T14 — ten concurrent silent closes produce exactly one dispose chain.
  *   C06  E07 — a failing close keeps the tab, records the exact target, and
  *         the retry reuses the SAME operationId; success removes the tab.
  *   C07  §6.3 — a hanging close trips the watchdog into closeFailed.
  *   C08  R10 — "already closed elsewhere" converges instead of failing.
- *   C09  §6.3 — empty+idle closes directly; a queued submission confirms.
+ *   C09  decision 2026-10-16 — silent close never branches on content.
  *   C10  E12 — a recorded reload-binding restores the ORIGINAL child (no
  *         second create), scoped to this window's owner.
  *   C11  T16 — a refused reclaim shows `ended` and 新建 mints a NEW
  *         generation instead of reviving or re-forking.
  *   C12  T12 — the close carries the captured host generation.
+ *   C17  round 3 — removal-first: the gesture returns WITHOUT a veto, the
+ *         framework removes the tab (abort lands before the dispose
+ *         settles), and the background dispose still completes exactly once.
+ *   C18  round 3 — a dispose failure after the tab is gone auto-retries the
+ *         SAME operationId once and converges silently (no warning).
+ *   C19  round 3 — a dispose that keeps failing after the retry surfaces
+ *         exactly one console warning and leaves no unhandled rejection.
  *
  * Run: node src/client/__selfcheck__/race-check.mjs
  * @module client/__selfcheck__/race-check
  */
 import { AuxChatController } from '../store.ts'
+import { setCopyLang } from '../../locale.ts'
 
 const checks = []
 const failures = []
@@ -40,7 +48,7 @@ function check(label, condition, detail) {
   if (!ok) failures.push(`${label}${detail === undefined ? '' : `  [${detail}]`}`)
 }
 
-// ── storage shims (reload-binding + confirm preference) ────────────────────
+// ── storage shims (reload-binding) ─────────────────────────────────────────
 const localMap = new Map()
 const sessionMap = new Map()
 globalThis.localStorage = {
@@ -170,7 +178,21 @@ function makeDeps() {
   return { deps, log, modes, deferreds }
 }
 
+// Pin the copy language: Node >=21 exposes navigator.language (en-US), which
+// would flip the dictionary to en and break the zh assertions below.
+setCopyLang('zh')
+
 const settle = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * One silent close gesture (round 3, removal-first): the shipped handler must
+ * return normally — the framework removes the tab itself while the protocol
+ * disposes in the background. Any throw fails the calling check loudly.
+ */
+async function silentClose(controller, tabId) {
+  controller.handleTabClose({ id: tabId })
+  await settle()
+}
 
 /** Build a controller + one live tab bound to MAIN_A, ready phase. */
 async function readyRuntime(script = {}) {
@@ -199,10 +221,10 @@ async function readyRuntime(script = {}) {
   const { controller, harness, runtime } = await readyRuntime()
   runtime.hasOwnTurn = true
   controller.setMainSession(MAIN_B)
-  controller.requestClose('tab-1')
-  check('C02: confirm copy names A (not the currently mounted B)', runtime.mainTitle === '主会话A：重构调研', String(runtime.mainTitle))
-  check('C02: confirming is bound to the captured tab', runtime.closeState === 'confirming', runtime.closeState)
-  await controller.confirmClose('tab-1', false)
+  await silentClose(controller, 'tab-1')
+  check('C02: close copy names A (not the currently mounted B)', runtime.mainTitle === '主会话A：重构调研', String(runtime.mainTitle))
+  check('C02: the silent protocol owns the captured tab', runtime.phase === 'closed' || runtime.phase === 'closing', runtime.phase)
+  check('C02: no confirmation state exists on the runtime', runtime.closeState === undefined, String(runtime.closeState))
   await settle()
   const dispose = harness.log.dispose.at(-1)
   check('C02: dispose hit the captured child with the captured host generation', dispose?.auxSessionId === runtime.sessionId && dispose?.options?.hostGeneration === 'gen-host-1', JSON.stringify(dispose))
@@ -228,6 +250,7 @@ async function readyRuntime(script = {}) {
   check('C03: nothing was installed into the closed tab', controller.tabRuntime('tab-1') === undefined, String(controller.tabRuntime('tab-1')))
 }
 
+// copy-truth: preparingTitle preparingBody
 // ══ C04: a late continuation cannot clobber a newer same-tab-id instance (T05)
 {
   const harness = makeDeps()
@@ -259,19 +282,20 @@ async function readyRuntime(script = {}) {
 {
   const { controller, harness, runtime } = await readyRuntime()
   runtime.hasOwnTurn = true
-  await Promise.all(Array.from({ length: 10 }, () => controller.confirmClose('tab-1', false)))
+  await Promise.all(Array.from({ length: 10 }, () => silentClose(controller, 'tab-1')))
   await settle()
   const disposes = harness.log.dispose.filter((d) => d.auxSessionId === runtime.sessionId)
-  check('C05: exactly one dispose ran for the confirmed close', disposes.length === 1, String(disposes.length))
+  check('C05: exactly one dispose ran for the silent close', disposes.length === 1, String(disposes.length))
   check('C05: the runtime closed exactly once', controller.tabRuntime('tab-1')?.phase === 'closed', controller.tabRuntime('tab-1')?.phase)
 }
 
+// copy-truth: closeFailedTitle closeFailedBody retryClose
 // ══ C06: failing close keeps the tab; retry reuses the operationId (E07) ═══
 {
   const { controller, harness, runtime } = await readyRuntime()
   runtime.hasOwnTurn = true
   harness.modes.dispose = 'fail'
-  await controller.confirmClose('tab-1', false)
+  await silentClose(controller, 'tab-1')
   await settle()
   check('C06: a failed close enters closeFailed', controller.tabRuntime('tab-1')?.phase === 'closeFailed', controller.tabRuntime('tab-1')?.phase)
   check('C06: the failure records the exact target', (controller.tabRuntime('tab-1')?.closeError ?? '').includes('teardown refused'), controller.tabRuntime('tab-1')?.closeError)
@@ -286,12 +310,13 @@ async function readyRuntime(script = {}) {
   check('C06: removal still bound to A', closeIn?.sessionId === MAIN_A, JSON.stringify(closeIn))
 }
 
+// copy-truth: closingTitle closingBody closingBodyLong
 // ══ C07: a hanging close trips the watchdog (§6.3) ═════════════════════════
 {
   const { controller, harness } = await readyRuntime()
   harness.modes.dispose = 'hang'
   const t0 = Date.now()
-  const inFlight = controller.confirmClose('tab-1', false) // not awaited yet
+  const inFlight = silentClose(controller, 'tab-1') // not awaited yet
   check('C07: the closing feedback flips synchronously (100ms budget)', controller.tabRuntime('tab-1')?.phase === 'closing', controller.tabRuntime('tab-1')?.phase)
   await settle(100) // past the 60ms watchdog, before the 500ms dispose settles
   const phase = controller.tabRuntime('tab-1')?.phase
@@ -317,7 +342,7 @@ async function readyRuntime(script = {}) {
   await settle()
   const runtime = controller.tabRuntime('tab-1')
   runtime.hasOwnTurn = true
-  await controller.confirmClose('tab-1', false)
+  await silentClose(controller, 'tab-1')
   await settle()
   check('C08: not-registered converges to closed instead of closeFailed', controller.tabRuntime('tab-1')?.phase === 'closed', controller.tabRuntime('tab-1')?.phase)
   const hintKey = [...localMap.keys()].find((k) => k.endsWith('.content-8'))
@@ -332,30 +357,36 @@ async function readyRuntime(script = {}) {
   controller2.ensureTabSession(new AbortController().signal, { tabId: 'tab-1', mainSessionId: MAIN_A, tabKey: 'content-8b' })
   await settle()
   controller2.tabRuntime('tab-1').hasOwnTurn = true
-  await controller2.confirmClose('tab-1', false)
+  await silentClose(controller2, 'tab-1')
   await settle()
   check('C08: stale-generation converges to closed (host restart ended the resource)', controller2.tabRuntime('tab-1')?.phase === 'closed', controller2.tabRuntime('tab-1')?.phase)
 }
 
-// ══ C09: empty+idle closes directly; a queued submission confirms (§6.3) ═══
+// ══ C09: silent close never branches on content (decision 2026-10-16) ═════
 {
-  const { controller, runtime } = await readyRuntime()
-  check('C09: empty+idle closes without confirmation', controller.closeNeedsConfirmation('tab-1') === false, '')
-  runtime.hasQueue = true
-  check('C09: a queued submission requires confirmation', controller.closeNeedsConfirmation('tab-1') === true, '')
-  runtime.hasQueue = false
-  runtime.hasOwnTurn = true
-  check('C09: own history requires confirmation', controller.closeNeedsConfirmation('tab-1') === true, '')
-  let vetoed = false
+  const { controller, harness } = await readyRuntime()
+  let threwEmpty = false
   try {
     controller.handleTabClose({ id: 'tab-1', kind: 'aux-chat' })
-  } catch (error) {
-    vetoed = error?.name === 'AuxChatCloseVeto'
+  } catch {
+    threwEmpty = true
   }
-  check('C09: the veto fires through the shipped close admission', vetoed, String(vetoed))
-  controller.cancelClose('tab-1')
-  controller.closeTabSession('tab-1', 'check done')
+  check('C09: an empty idle tab enters the silent protocol without a veto', threwEmpty === false && controller.tabRuntime('tab-1')?.phase === 'closing', controller.tabRuntime('tab-1')?.phase)
   await settle()
+  check('C09: the empty tab was disposed and closed', harness.log.dispose.length === 1 && controller.tabRuntime('tab-1')?.phase === 'closed', String(controller.tabRuntime('tab-1')?.phase))
+  const second = await readyRuntime()
+  second.runtime.hasQueue = true
+  second.runtime.hasOwnTurn = true
+  second.runtime.running = true
+  let threwBusy = false
+  try {
+    second.controller.handleTabClose({ id: 'tab-1', kind: 'aux-chat' })
+  } catch {
+    threwBusy = true
+  }
+  await settle()
+  const busyPhase = second.controller.tabRuntime('tab-1')?.phase
+  check('C09: a running/queued tab takes the SAME silent path (no dialog state, no veto)', threwBusy === false && busyPhase === 'closed' && second.controller.tabRuntime('tab-1')?.closeState === undefined, String(busyPhase))
 }
 
 // ══ C10: a recorded reload-binding restores the ORIGINAL child (E12) ═══════
@@ -389,6 +420,7 @@ async function readyRuntime(script = {}) {
   await settle()
 }
 
+// copy-truth: endedTitle endedDefault
 // ══ C11: a refused reclaim shows ended; 新建 mints a NEW generation (T16) ══
 {
   const { controller, runtime } = await readyRuntime()
@@ -414,10 +446,142 @@ async function readyRuntime(script = {}) {
 {
   const { controller, harness, runtime } = await readyRuntime()
   runtime.hasOwnTurn = true
-  await controller.confirmClose('tab-1', false)
+  await silentClose(controller, 'tab-1')
   await settle()
   const dispose = harness.log.dispose.at(-1)
   check('C12: dispose carried hostGeneration=gen-host-1 and an operationId', dispose?.options?.hostGeneration === 'gen-host-1' && typeof dispose?.options?.operationId === 'string', JSON.stringify(dispose?.options))
+}
+
+// ══ C13: silent close of a RUNNING turn aborts via dispose (decision) ═══════
+{
+  const { controller, harness, runtime } = await readyRuntime()
+  runtime.running = true
+  runtime.hasOwnTurn = true
+  await silentClose(controller, 'tab-1')
+  check('C13: a running turn is closed silently (dispose ran, no dialog)', harness.log.dispose.length === 1 && controller.tabRuntime('tab-1')?.phase === 'closed', String(controller.tabRuntime('tab-1')?.phase))
+  check('C13: no confirmation state object exists on the runtime', controller.tabRuntime('tab-1')?.closeState === undefined, String(controller.tabRuntime('tab-1')?.closeState))
+}
+
+// ══ C14: double-click on the close gesture = one logical close ══════════════
+{
+  const { controller, harness, runtime } = await readyRuntime()
+  runtime.hasOwnTurn = true
+  await Promise.all([silentClose(controller, 'tab-1'), silentClose(controller, 'tab-1')])
+  const disposes = harness.log.dispose.filter((d) => d.auxSessionId === runtime.sessionId)
+  check('C14: two gestures in the same tick produce one dispose', disposes.length === 1, String(disposes.length))
+}
+
+// ══ C15: closing a creating tab allows removal; late child still rolled back ═
+{
+  const harness = makeDeps()
+  harness.modes.create = 'defer'
+  const controller = new AuxChatController(harness.deps)
+  const abort = new AbortController()
+  controller.ensureTabSession(abort.signal, { tabId: 'tab-1', mainSessionId: MAIN_A, tabKey: 'content-15' })
+  await settle()
+  let threw = false
+  try {
+    controller.handleTabClose({ id: 'tab-1' })
+  } catch {
+    threw = true
+  }
+  check('C15: a creating tab closes without a veto (nothing owned yet)', threw === false, String(threw))
+  abort.abort()
+  await settle()
+  const deferred = harness.deferreds.at(-1)
+  deferred.resolve()
+  await settle()
+  check('C15: the late child of a closed creating tab is rolled back', harness.log.dispose.some((d) => d.auxSessionId === deferred.auxSessionId), JSON.stringify(harness.log.dispose))
+}
+
+// ══ C16: indicators() is the single source for unread/live/running ═════════
+{
+  const { controller, runtime } = await readyRuntime()
+  runtime.unread = true
+  const ind = controller.indicators()
+  check('C16: indicators report one live unread runtime', ind.live === 1 && ind.unread === 1 && ind.running === 0, JSON.stringify(ind))
+  controller.markSeen('tab-1')
+  const after = controller.indicators()
+  check('C16: markSeen clears the unread indicator', after.unread === 0 && after.live === 1, JSON.stringify(after))
+  controller.closeTabSession('tab-1', 'check done')
+  await settle()
+  const gone = controller.indicators()
+  check('C16: a closed runtime leaves the indicators', gone.live === 0, JSON.stringify(gone))
+}
+
+// ══ C17: removal-first timing (round 3) ═════════════════════════════════════
+{
+  const { controller, harness, runtime, abort } = await readyRuntime()
+  let threw = false
+  try {
+    controller.handleTabClose({ id: 'tab-1' })
+  } catch {
+    threw = true
+  }
+  check('C17: the close gesture returns without a veto (the framework removes the tab)', threw === false, String(threw))
+  check('C17: the protocol took responsibility synchronously', controller.tabRuntime('tab-1')?.phase === 'closing', controller.tabRuntime('tab-1')?.phase)
+  // The framework's synchronous commit unmounts the tab right after the
+  // gesture returns — emulate it: the abort bookkeeping runs BEFORE the
+  // dispose settles (the real ordering under removal-first).
+  abort.abort()
+  check('C17: the unmount bookkeeping retired the runtime', controller.tabRuntime('tab-1') === undefined, String(controller.tabRuntime('tab-1')))
+  await settle()
+  const disposes = harness.log.dispose.filter((d) => d.auxSessionId === runtime.sessionId)
+  check('C17: the background dispose completed exactly once', disposes.length === 1, String(disposes.length))
+  // C10 deliberately leaves a SECOND window's hint under another owner; this
+  // check owns only THIS window's key.
+  const owner = sessionMap.get('aux-chat.owner')
+  check('C17: the reload-binding hint is cleared', !localMap.has(`aux-chat.binding.${owner}.content-1`), JSON.stringify([...localMap.keys()]))
+}
+
+// ══ C18: background failure retries once with the SAME operation (round 3) ═
+{
+  const { controller, harness, runtime, abort } = await readyRuntime()
+  harness.modes.dispose = 'fail' // fails once, then resets to ok
+  const warns = []
+  const origWarn = console.warn
+  console.warn = (...args) => warns.push(args.map(String).join(' '))
+  try {
+    controller.handleTabClose({ id: 'tab-1' })
+    abort.abort() // tab already removed by the framework
+    await settle()
+    await settle(1_300) // past the 1s background retry
+  } finally {
+    console.warn = origWarn
+  }
+  const disposes = harness.log.dispose.filter((d) => d.auxSessionId === runtime.sessionId)
+  const opIds = new Set(disposes.map((d) => d.options?.operationId))
+  check('C18: the failed background close retried exactly once more', disposes.length === 2, String(disposes.length))
+  check('C18: the retry reused the SAME operation id', opIds.size === 1 && [...opIds][0]?.startsWith('close-'), JSON.stringify([...opIds]))
+  check('C18: a converged retry stays fully silent (no warning)', warns.length === 0, warns.join(' | '))
+}
+
+// ══ C19: persistent failure → exactly one warning, no unhandled rejection ══
+{
+  const { controller, runtime, abort } = await readyRuntime()
+  controller.deps.dispose = async () => {
+    throw new Error('aux-chat/dispose-failed: permanent refusal')
+  }
+  const warns = []
+  const origWarn = console.warn
+  console.warn = (...args) => warns.push(args.map(String).join(' '))
+  let unhandled = null
+  const onUnhandled = (error) => {
+    unhandled = error
+  }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    controller.handleTabClose({ id: 'tab-1' })
+    abort.abort()
+    await settle()
+    await settle(1_300)
+  } finally {
+    console.warn = origWarn
+    process.off('unhandledRejection', onUnhandled)
+  }
+  check('C19: a persistently failing close surfaced exactly one warning', warns.length === 1 && warns[0]?.includes('background close'), JSON.stringify(warns))
+  check('C19: the warning names the session and its resource is left to the boot sweep', warns[0]?.includes(runtime.sessionId) === true, String(warns[0]))
+  check('C19: no unhandled rejection escaped the protocol', unhandled === null, String(unhandled))
 }
 
 // ── report ──────────────────────────────────────────────────────────────────

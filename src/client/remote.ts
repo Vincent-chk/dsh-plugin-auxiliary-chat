@@ -16,6 +16,7 @@
  * `/aux-end` is likewise addressed at the auxiliary session itself.
  * @module client/remote
  */
+import { msg } from '../locale.ts'
 import type { AuxCreateOutcome, ReclaimOutcome } from './store.ts'
 import type { ClientContextLike, CommandsRemoteLike, CommandExecutionLike, RemoteResultLike } from './types.ts'
 import { describeError } from './store.ts'
@@ -109,7 +110,7 @@ async function executeLine(
     throw new Error(`${message} (${code})`)
   }
   if (result.value === undefined) {
-    throw new Error('辅助会话命令未注册：插件 host 半侧未加载或未生效')
+    throw new Error(msg('errCommandNotRegistered'))
   }
   if (result.value.result.kind === 'error') throw new Error(result.value.result.text)
   return result.value.result.text ?? ''
@@ -120,7 +121,7 @@ function parsePayload<T>(text: string, label: string): T {
   try {
     return JSON.parse(text) as T
   } catch {
-    throw new Error(`${label} 返回载荷无法解析：${text.slice(0, 200)}`)
+    throw new Error(msg('errPayloadUnparsable', { label, text: text.slice(0, 200) }))
   }
 }
 
@@ -139,9 +140,9 @@ function parsePayload<T>(text: string, label: string): T {
  */
 export async function forkAuxSession(ctx: ClientContextLike, mainSessionId: string): Promise<string> {
   const fork = ctx.sessions?.fork
-  if (typeof fork !== 'function') throw new Error('辅助会话服务不可用（sessions.fork 未装配）')
+  if (typeof fork !== 'function') throw new Error(msg('errForkUnavailable'))
   const childId = await fork.call(ctx.sessions, { sessionId: mainSessionId, atSeq: 0 })
-  if (typeof childId !== 'string' || childId === '') throw new Error('sessions.fork 未返回子会话 id')
+  if (typeof childId !== 'string' || childId === '') throw new Error(msg('errForkNoChild'))
   return childId
 }
 
@@ -180,7 +181,7 @@ export async function initAuxSession(
   options?: { readonly mode?: 'reclaim'; readonly requestId?: string },
 ): Promise<AuxCreateOutcome> {
   const commands = commandsRemote(ctx)
-  if (commands === undefined) throw new Error('辅助会话服务不可用（命令通道未装配）')
+  if (commands === undefined) throw new Error(msg('errCommandsUnavailable'))
   const payload: InitPayload = {
     sessionId: auxSessionId,
     mirrorOf,
@@ -189,7 +190,7 @@ export async function initAuxSession(
   }
   const text = await executeLine(commands, auxSessionId, `/${INIT_COMMAND} ${JSON.stringify(payload)}`)
   const reply = parsePayload<InitReply>(text, INIT_COMMAND)
-  if (reply.ok === false) throw new Error(`${INIT_COMMAND} 报告初始化失败`)
+  if (reply.ok === false) throw new Error(msg('errInitFailed', { command: INIT_COMMAND }))
   return {
     cwd: reply.info?.cwd ?? '',
     warnings: Array.isArray(reply.warnings) ? reply.warnings : [],
@@ -235,7 +236,7 @@ export async function endAuxSession(
   options?: { readonly operationId?: string; readonly hostGeneration?: string },
 ): Promise<void> {
   const commands = commandsRemote(ctx)
-  if (commands === undefined) throw new Error('辅助会话服务不可用（命令通道未装配）')
+  if (commands === undefined) throw new Error(msg('errCommandsUnavailable'))
   const payload: EndPayload = {
     sessionId: auxSessionId,
     ...(options?.operationId === undefined ? {} : { operationId: options.operationId }),
@@ -244,7 +245,7 @@ export async function endAuxSession(
   const text = await executeLine(commands, auxSessionId, `/${END_COMMAND} ${JSON.stringify(payload)}`)
   if (text.trim() === '') return
   const reply = parsePayload<EndReply>(text, END_COMMAND)
-  if (reply.ok === false) throw new Error(`${END_COMMAND} 报告销毁失败`)
+  if (reply.ok === false) throw new Error(msg('errEndFailed', { command: END_COMMAND }))
 }
 
 export { describeError }

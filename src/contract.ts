@@ -42,6 +42,9 @@ export const RETAIN_SOURCE = 'auxChatPanel'
 /** Title prefix every auxiliary session carries, so it stays recognisable if it ever surfaces. */
 export const TITLE_PREFIX = '[辅助]'
 
+/** Fallback label when the mirrored main session has no readable title. */
+export const TITLE_UNNAMED = '未命名会话'
+
 /**
  * Identity of the Host process/boot that owns an auxiliary session.
  *

@@ -8,7 +8,15 @@
  * - 打开 is idempotent — an existing auxiliary tab is focused, never
  *   duplicated (`tabsIn` + `focus`); 新建 is the explicit `openTab` action.
  * - 收起 / 切标签 / 切主会话 never destroy; only the tab's own close gesture
- *   removes, and non-empty sessions require confirmation.
+ *   removes. Decision 2026-10-16 (refactor plan v2): close is SILENT — no
+ *   confirmation dialog, no risk warnings. Round 3
+ *   (PLAN-ROUND3): the protocol is REMOVAL-FIRST — the close handler never
+ *   vetoes, the framework removes the tab in the same gesture, and the
+ *   dispose (destroy + archive cleanup) finishes in the background. The
+ *   shipped tab system's ONLY preservation channel is a synchronous throw,
+ *   which the host logs at error level ("Sidebar tab close failed") — never
+ *   throwing is what makes every legitimate close console-clean. The strict
+ *   parts stay strict: captured ids, operation-id retry, watchdog.
  * - A response completing in the background marks the tab unread; focus
  *   clears it.
  *
@@ -24,6 +32,7 @@ import type {
   SidebarRightLike,
   SidebarTabLike,
 } from './types.ts'
+import { msg } from '../locale.ts'
 
 export const AUX_TAB_KIND = 'aux-chat'
 
@@ -97,9 +106,6 @@ export interface AuxInheritedReport {
  */
 export type TabSessionPhase = 'creating' | 'ready' | 'failed' | 'closing' | 'closeFailed' | 'closed' | 'ended'
 
-/** Close-confirmation state. */
-export type CloseState = 'idle' | 'confirming'
-
 /**
  * Outcome of a re-attach attempt against a previously bound child.
  * `gone` means the resource definitively no longer exists on this Host.
@@ -125,13 +131,13 @@ export interface AuxTabRuntime {
   inherited: AuxInheritedReport | undefined
   unread: boolean
   running: boolean
-  closeState: CloseState
   hasOwnTurn: boolean
-  /** An unsent submission is queued on the child (close must confirm). */
+  /** An unsent submission is queued on the child (silent close aborts it). */
   hasQueue: boolean
-  bypassNextClose: boolean
   disposed: boolean
   unsubscribeSnapshot: Disposable | undefined
+  /** Model route inherited at creation (plan P1: surfaced in the fact bar). */
+  model: string | undefined
   /**
    * Creation generation of THIS runtime's current resource attempt. Every
    * async continuation carries the epoch it started with and is dropped when
@@ -172,19 +178,6 @@ export interface AuxChatState {
   readonly tabRuntimes: ReadonlyMap<string, AuxTabRuntime>
 }
 
-/**
- * Thrown synchronously from the shipped close handler to cancel removal while
- * the confirmation dialog is open: the handler runs before the commit and a
- * throw is the only channel that preserves the tab.
- */
-export class CloseVetoError extends Error {
-  constructor() {
-    super('aux-chat: close awaits user confirmation')
-    this.name = 'AuxChatCloseVeto'
-  }
-}
-
-const SKIP_CONFIRM_KEY = 'aux-chat.skip-close-confirm'
 const OWNER_KEY = 'aux-chat.owner'
 
 /** Construction input. */
@@ -344,7 +337,7 @@ export class AuxChatController {
       tabKey: info.tabKey ?? info.tabId,
       mainSessionId,
       cwd,
-      name: ordinal === 1 ? '辅助会话' : `辅助会话 ${String(ordinal)}`,
+      name: ordinal === 1 ? msg('tabName') : msg('tabNameN', { n: ordinal }),
       sessionId: undefined,
       phase: 'creating',
       message: undefined,
@@ -353,12 +346,11 @@ export class AuxChatController {
       inherited: undefined,
       unread: false,
       running: false,
-      closeState: 'idle',
       hasOwnTurn: false,
       hasQueue: false,
-      bypassNextClose: false,
       disposed: false,
       unsubscribeSnapshot: undefined,
+      model: undefined,
       epoch: 1,
       hostGeneration: undefined,
       closeOperationId: undefined,
@@ -395,7 +387,7 @@ export class AuxChatController {
         if (!this.isCurrent(runtime, epoch) || runtime.signal.aborted) return
         runtime.sessionId = undefined
         runtime.hostGeneration = undefined
-        this.patchTab(runtime.tabId, { phase: 'failed', message: `恢复辅助会话失败：${describeError(error)}` })
+        this.patchTab(runtime.tabId, { phase: 'failed', message: msg('statusReclaimFailed', { error: describeError(error) }) })
         return
       }
       if (!this.isCurrent(runtime, epoch) || runtime.signal.aborted) {
@@ -409,7 +401,7 @@ export class AuxChatController {
         // retain failed below the reclaim: the resource is alive but this
         // client cannot bind it — surface as a normal failure with retry.
         runtime.sessionId = undefined
-        this.patchTab(runtime.tabId, { phase: 'failed', message: '辅助会话已恢复，但本地绑定失败；请重试。' })
+        this.patchTab(runtime.tabId, { phase: 'failed', message: msg('statusReclaimBindFailed') })
         return
       }
       // The child is gone (Host restart swept it, or reclaim was refused).
@@ -420,7 +412,7 @@ export class AuxChatController {
       runtime.hostGeneration = undefined
       this.patchTab(runtime.tabId, {
         phase: 'ended',
-        endedReason: '辅助会话已结束（主机已重启或该会话已被回收）。临时会话不自动恢复。',
+        endedReason: msg('endedReasonGone'),
       })
       return
     }
@@ -474,6 +466,7 @@ export class AuxChatController {
     runtime.downgrade = outcome.downgrade
     runtime.inherited = outcome.inherited
     runtime.hostGeneration = outcome.hostGeneration
+    runtime.model = outcome.model
     runtime.phase = 'ready'
     runtime.message = undefined
     runtime.closeError = undefined
@@ -496,8 +489,9 @@ export class AuxChatController {
       const snapshot = session.getSnapshot?.()
       if (snapshot === undefined) return
       if (snapshot.promptAttempted === true) runtime.hasOwnTurn = true
-      // PRD v2.0 §6.3: unsent queued submissions count as work-in-flight — a
-      // close must confirm while a queue is pending, not silently drop it.
+      // Unsent queued submissions count as work-in-flight: a silent close
+      // aborts them with the turn (plan v2 decision), and the close card
+      // names the target while the protocol runs.
       runtime.hasQueue = Array.isArray(snapshot.pendingSubmissions) && snapshot.pendingSubmissions.length > 0
       const wasRunning = runtime.running
       runtime.running = snapshot.running === true
@@ -566,54 +560,41 @@ export class AuxChatController {
     void this.startTabSession(runtime)
   }
 
-  // ── close confirmation & the close protocol (PRD v2.0 §6.3/R08/R10) ─────
+  // ── silent close protocol (plan v2 decision 2026-10-16) ────
 
-  closeNeedsConfirmation(tabId: string): boolean {
-    const runtime = this.tabRuntimes.get(tabId)
-    if (runtime === undefined || runtime.phase !== 'ready' || runtime.bypassNextClose) return false
-    if (this.skipConfirmPreference()) return false
-    // empty + idle closes directly; a draft-only session, an own turn, a run,
-    // or a queued-but-unsent submission all require confirmation.
-    return runtime.hasOwnTurn || runtime.running || runtime.hasQueue
-  }
-
-  /** The shipped close handler invokes this before any tab removal. */
+  /**
+   * The shipped close handler invokes this before any tab removal. Silent by
+   * product decision: every close gesture starts the protocol immediately —
+   * no confirmation dialog, no risk warning. REMOVAL-FIRST (round 3): this
+   * handler NEVER throws, so the framework removes the tab synchronously in
+   * the same gesture (exactly like its own tabs) and the
+   * dispose finishes in the background. A throw would also be logged at
+   * error level by the shipped tab chrome ("Sidebar tab close failed") — the
+   * noise this protocol exists to avoid — and would break any OTHER plugin
+   * whose `openTab` replaces one of our tabs (that path calls close handlers
+   * without a catch).
+   */
   handleTabClose(tab: SidebarTabLike): void {
     const runtime = this.tabRuntimes.get(tab.id)
     if (runtime === undefined) return
-    if (runtime.bypassNextClose) {
-      runtime.bypassNextClose = false
-      return
-    }
     if (runtime.phase === 'closing' || runtime.phase === 'closed') {
-      // A confirmed close already owns the cleanup; the tab may go.
+      // A close already owns the cleanup; the tab may go.
       return
     }
-    if (runtime.phase === 'closeFailed') {
-      // The X on a failed-close tab re-attempts the SAME close operation on
-      // the SAME resource generation (§9: 重试固定同一 operationId 与资源代次).
-      // The tab stays until that attempt settles.
-      void this.confirmClose(tab.id, false)
-      throw new CloseVetoError()
+    if (runtime.sessionId === undefined) {
+      // Nothing owned yet (creating / failed / ended): allow the removal; the abort
+      // listener and the late-success rollback clean any child that appears.
+      return
     }
-    if (!this.closeNeedsConfirmation(tab.id)) return
-    this.enterConfirming(runtime)
-    throw new CloseVetoError()
+    // ready (or a defensive-host closeFailed): take the cleanup responsibility
+    // and let the tab go — the dispose runs detached from the gesture.
+    void this.startClose(tab.id)
   }
 
-  /** Open the inline confirmation, capturing the SOURCE identity (V10/T01). */
-  private enterConfirming(runtime: AuxTabRuntime): void {
-    runtime.closeState = 'confirming'
-    // Bound read by id — never "what is currently on screen": switching to
-    // session B between the click and the confirm must not rewrite the copy.
-    runtime.mainTitle = this.titleOf(runtime.mainSessionId)
-    this.update()
-  }
-
-  /** Human label for the confirmation / failure copy: “A 的 a”. */
+  /** Human label for the closing / failure copy: “A 的 a”. */
   targetLabel(runtime: AuxTabRuntime): string {
     const main = runtime.mainTitle ?? runtime.mainSessionId
-    return `${main} 的 ${runtime.name}`
+    return msg('targetLabel', { main, name: runtime.name })
   }
 
   /** The title of one main session, read by id (never by current selection). */
@@ -627,34 +608,20 @@ export class AuxChatController {
     }
   }
 
-  requestClose(tabId: string): void {
-    const runtime = this.tabRuntimes.get(tabId)
-    if (runtime !== undefined && runtime.closeState === 'idle' && runtime.phase === 'ready') {
-      this.enterConfirming(runtime)
-    }
-  }
-
-  cancelClose(tabId: string): void {
-    const runtime = this.tabRuntimes.get(tabId)
-    if (runtime !== undefined && runtime.closeState === 'confirming') {
-      runtime.closeState = 'idle'
-      this.update()
-    }
-  }
-
-  /** Whether a close error means the resource is already gone/converged. */
-  private isAlreadyClosed(text: string): boolean {
-    return /aux-chat\/(not-registered|stale-generation)/.test(text)
-  }
-
   /**
-   * Confirm: the cleanup responsibility is taken synchronously (phase flips
-   * to `closing` in the same task), the Host dispose runs against the
-   * CAPTURED child + host generation, and the tab is removed only after the
-   * Host acknowledged. Failures keep the tab, record the exact target, and
-   * offer 重试关闭 with the SAME operation id.
+   * Silent close: the cleanup responsibility is taken synchronously (phase
+   * flips to `closing` in the same task), the Host dispose runs against the
+   * CAPTURED child + host generation. REMOVAL-FIRST (round 3): under the
+   * shipped tab system the tab is normally ALREADY GONE by the time the
+   * dispose settles — the framework removed it in the close gesture and the
+   * abort listener did the runtime bookkeeping — so this continuation merely
+   * finishes the resource teardown. A failure after the tab is gone retries
+   * once with the SAME operation id (a partially torn-down host converges via
+   * its not-registered signal) and then surfaces as a warning; the
+   * closeFailed card only remains for hosts that did NOT remove the tab
+   * (defensive path, where 重试关闭 keeps its meaning).
    */
-  async confirmClose(tabId: string, remember: boolean): Promise<void> {
+  async startClose(tabId: string): Promise<void> {
     const runtime = this.tabRuntimes.get(tabId)
     if (runtime === undefined || runtime.sessionId === undefined) return
     // Idempotent (T14): a closing/closed tab ignores further clicks, and only
@@ -666,16 +633,22 @@ export class AuxChatController {
     const operationId = runtime.closeOperationId ?? `close-${newSessionId()}`
     runtime.closeOperationId = operationId
     runtime.closeError = undefined
-    runtime.closeState = 'idle'
+    runtime.mainTitle = this.titleOf(runtime.mainSessionId)
     runtime.phase = 'closing'
     this.update() // synchronous feedback, well under the 100ms target
     const timeoutMs = this.deps.closeTimeoutMs ?? 30_000
+    let settled = false
     const watchdog: ReturnType<typeof setTimeout> = setTimeout(() => {
+      if (settled) return
       if (this.isCurrent(runtime) && runtime.phase === 'closing') {
         runtime.phase = 'closeFailed'
-        runtime.closeError = `关闭超过 ${String(Math.round(timeoutMs / 1000))} 秒未完成。已保留清理责任与原目标，可重试关闭。`
-        this.update({ status: `辅助会话仍在关闭（${this.targetLabel(runtime)}）。` })
+        runtime.closeError = msg('closeTimeout', { seconds: Math.max(1, Math.round(timeoutMs / 1000)) })
+        this.update({ status: msg('statusClosing', { target: this.targetLabel(runtime) }) })
+        return
       }
+      // Removal-first background close: the tab is long gone, so the only
+      // observable left for a stuck dispose is this warning (plan AC-A3).
+      console.warn(`[aux-chat] background close of ${sessionId} (op ${operationId}) is still in flight after ${Math.max(1, Math.round(timeoutMs / 1000))}s`)
     }, timeoutMs)
     try {
       await this.deps.dispose(sessionId, {
@@ -684,37 +657,37 @@ export class AuxChatController {
       })
     } catch (error) {
       const text = describeError(error)
+      settled = true
       clearTimeout(watchdog)
       if (this.isAlreadyClosed(text)) {
         // Converged elsewhere (swept after a Host restart, or a racing close
         // finished first): the resource is gone; fall through to closed.
       } else {
-        if (!this.isCurrent(runtime)) return
+        if (!this.isCurrent(runtime)) {
+          // The tab is already removed (the normal removal-first outcome):
+          // retry the SAME operation once in the background, then warn.
+          this.retryInBackground(sessionId, operationId, runtime, text)
+          return
+        }
         runtime.phase = 'closeFailed'
         runtime.closeError = text
-        this.update({ status: `关闭未完成，内容暂时保留（${this.targetLabel(runtime)}）：${text}` })
+        this.update({ status: msg('statusCloseFailed', { target: this.targetLabel(runtime), error: text }) })
         return
       }
     }
+    settled = true
     clearTimeout(watchdog)
     this.clearBinding(runtime)
     this.releaseReference(sessionId)
     if (!this.isCurrent(runtime)) return
     runtime.disposed = true
     runtime.phase = 'closed'
-    runtime.closeState = 'idle'
-    if (remember) {
-      try {
-        globalThis.localStorage?.setItem(SKIP_CONFIRM_KEY, '1')
-      } catch {
-        /* private mode: preference just does not persist */
-      }
-    }
-    runtime.bypassNextClose = true
     try {
       const sidebar = this.sidebarRight
-      // Bound removal: the tab is removed from ITS owner session (A), not
-      // from whatever is currently mounted (R03/R04).
+      // Bound removal (defensive hosts that kept the tab): the tab is removed
+      // from ITS owner session (A), not from whatever is currently mounted
+      // (R03/R04). Under removal-first this closeIn is a no-op — the gesture
+      // itself already removed the tab.
       if (sidebar?.closeIn !== undefined) sidebar.closeIn(runtime.mainSessionId, tabId)
       else sidebar?.close(tabId)
     } catch {
@@ -723,19 +696,66 @@ export class AuxChatController {
     this.update()
   }
 
+  /** Sessions whose background close already used its one retry. */
+  private backgroundRetried = new Set<string>()
+
+  /** Retry delay for a background close failure (bounded, once per session). */
+  private readonly backgroundRetryMs = 1_000
+
+  /**
+   * Removal-first failure handling: the tab is gone, so there is no surface
+   * for a card — retry the SAME operation id once (a host that partially tore
+   * down converges via its not-registered signal on the second call), then
+   * report the residue as a warning. The binding hint was already cleared by
+   * the abort bookkeeping, so a permanently orphaned child stays archived
+   * (invisible) and the next Host boot sweeps it by generation.
+   */
+  private retryInBackground(sessionId: string, operationId: string, runtime: AuxTabRuntime, firstError: string): void {
+    if (this.backgroundRetried.has(sessionId)) {
+      console.warn(`[aux-chat] background close of ${sessionId} (op ${operationId}) failed twice; leaving the archived resource for the boot sweep. Last error: ${firstError}`)
+      return
+    }
+    this.backgroundRetried.add(sessionId)
+    setTimeout(() => {
+      this.deps
+        .dispose(sessionId, { operationId })
+        .then(() => {
+          this.clearBinding(runtime)
+        })
+        .catch((retryError: unknown) => {
+          console.warn(`[aux-chat] background close retry of ${sessionId} (op ${operationId}) failed: ${describeError(retryError)}`)
+        })
+    }, this.backgroundRetryMs)
+  }
+
   /** Retry a failed close: same operation id, same resource generation. */
   retryClose(tabId: string): void {
     const runtime = this.tabRuntimes.get(tabId)
     if (runtime === undefined || runtime.phase !== 'closeFailed') return
-    void this.confirmClose(tabId, false)
+    void this.startClose(tabId)
   }
 
-  private skipConfirmPreference(): boolean {
-    try {
-      return globalThis.localStorage?.getItem(SKIP_CONFIRM_KEY) === '1'
-    } catch {
-      return false
+  /** Whether a close error means the resource is already gone/converged. */
+  private isAlreadyClosed(text: string): boolean {
+    return /aux-chat\/(not-registered|stale-generation)/.test(text)
+  }
+
+  /**
+   * Single source of truth for panel-wide indicators (plan P0/WP0.5): the
+   * header broadcast, the guide bubble and the header dot all read THIS, so
+   * they can never disagree (the v2 report's same-screen contradiction).
+   */
+  indicators(): { live: number; unread: number; running: number } {
+    let live = 0
+    let unread = 0
+    let running = 0
+    for (const runtime of this.tabRuntimes.values()) {
+      if (runtime.phase === 'closed' || runtime.phase === 'ended') continue
+      live += 1
+      if (runtime.unread) unread += 1
+      if (runtime.running) running += 1
     }
+    return { live, unread, running }
   }
 
   /** The one automatic destruction edge: the tab record disappeared. */
@@ -752,7 +772,7 @@ export class AuxChatController {
     if (!runtime.disposed && sessionId !== undefined && runtime.phase !== 'closing' && runtime.phase !== 'closed') {
       void this.deps.dispose(sessionId).catch(() => undefined)
     }
-    this.update({ status: `辅助会话已关闭（${reason}）` })
+    this.update({ status: msg('statusClosed', { reason }) })
   }
 
   // ── reload-binding persistence (PRD v2.0 §7.1) ──────────────────────────
@@ -892,7 +912,7 @@ export class AuxChatController {
     try {
       return await this.deps.handoff(sessionId, mainSessionId)
     } catch (error) {
-      return { ok: false, message: `复制失败：${describeError(error)}` }
+      return { ok: false, message: msg('statusCopyFailed', { error: describeError(error) }) }
     }
   }
 
@@ -911,7 +931,7 @@ export class AuxChatController {
     try {
       this.deps.present(shown)
     } catch (error) {
-      this.update({ status: `右列几何上报失败：${describeError(error)}` })
+      this.update({ status: msg('statusGeometry') })
     }
   }
   toggleShown(): void {
@@ -926,19 +946,19 @@ export class AuxChatController {
       return
     }
     if (mainSessionId === undefined) {
-      this.update({ status: '没有可镜像的主会话：请先打开一个会话。' })
+      this.update({ status: msg('statusNoMain') })
       return
     }
     void this.createTab(mainSessionId)
   }
   async createTab(mainSessionId: string | undefined): Promise<void> {
     if (mainSessionId === undefined) {
-      this.update({ status: '没有可镜像的主会话：请先打开一个会话。' })
+      this.update({ status: msg('statusNoMain') })
       return
     }
     if (this.busy) return
     this.busy = true
-    this.update({ status: '正在准备主会话上下文…' })
+    this.update({ status: msg('statusPreparing') })
     try {
       const outcome = await this.deps.create(this.cwdOf(mainSessionId), mainSessionId)
       const sessionId = outcome.sessionId
@@ -948,11 +968,13 @@ export class AuxChatController {
       this.tabs = [...this.tabs, { sessionId, mirrorOf: mainSessionId, cwd: outcome.cwd, createdAt: Date.now(), warnings: outcome.warnings }]
       this.activeId = sessionId
       this.busy = false
-      this.update({ status: outcome.warnings.length === 0 ? undefined : `镜像警告：${outcome.warnings.join('；')}` })
+      this.update({
+        status: outcome.warnings.length === 0 ? undefined : msg('statusMirrorWarnings', { warnings: outcome.warnings.join('；') }),
+      })
       this.setShown(true)
     } catch (error) {
       this.busy = false
-      this.update({ status: `创建辅助会话失败：${describeError(error)}` })
+      this.update({ status: msg('statusCreateFailed', { error: describeError(error) }) })
     }
   }
   activate(sessionId: string): void {
@@ -966,7 +988,7 @@ export class AuxChatController {
     })
     this.releaseReference(sessionId)
     void this.deps.dispose(sessionId).catch((error: unknown) => {
-      this.update({ status: `标签已关闭，但主机侧销毁失败：${describeError(error)}（下次启动清扫会兜底）` })
+      this.update({ status: msg('statusDisposeFailed', { error: describeError(error) }) })
     })
   }
   endActiveSession(): void {
