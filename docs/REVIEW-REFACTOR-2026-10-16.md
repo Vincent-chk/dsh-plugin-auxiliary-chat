@@ -36,10 +36,31 @@
 6. **schemastery 窄 cast 无 enum**：配置 schema 加 enum 会运行期炸 → 改读取时校验（`archive|native` 之外一律 auto）。
 7. **STALE 自检误加用例**：H1–H7 先加进了已标注 STALE 的 selfcheck.mjs（跑不到）→ 移至新活门禁 hide-channel-check.mjs，STALE 文件还原。
 
+### 复核补遗（2026-10-16 二轮调研，针对收官汇报四个遗留断言）
+
+8. **`sidebarRight` 硬依赖已代码实锤**：`dsh-client-ui-chat` 的 `inject` 数组显式含
+   `"sidebarRight"`（lib/client.js Chat target inject 声明），该服务仅由
+   `dsh-client-ui-sidebar-right` 提供——禁用官方右栏则会话 UI 永不激活，Path A 在
+   DSH 0.2.x 上不可达。AC-U-05 偏差记录的根因链闭合，结论不变。
+9. **CloseVeto 噪声根因已实锤**：`removeAfterCleanup` 同步调用处理器并立即 `commit()`，
+   返回值被忽略；"Failure preserves the tab"（抛错=保留）是宿主文档化且唯一的否决通道。
+   错误日志来自宿主 UI 自己的 `closeTab` 包装（`console.error("Sidebar tab close failed:")`），
+   插件侧无法消除 → 已列 `docs/SEAM-REQUEST.md` S4。
+10. **旧截影"还没有辅助会话"句式无法溯源（修正原判断）**：该句在插件全部 git 历史
+   （`git log -S`）、当前代码、当前宿主包中均不存在；当前真页捕获证明宿主引导卡是
+   "标题+描述"原样拼接（无宿主自拼模板）。§3 原第三条"宿主 EntryBox 自拼句式"的说法
+   证据不足，予以撤回；矛盾风险由本插件单源 indicators + 现行文案关闭。
+11. **WP2.3 闪烁断言补全**：原 e2e 只钉了"创建即归档/空闲重归档"两半，缺"回合进行中
+    解档（行可见）"半——已补显式断言（`G10/WP2.3: mid-turn the archive bridge lifted
+    the hide…`），每回合 1+1 闪烁的度量现在两端都有真栈证据。
+
 ## 3 · 已知残留（记录，不阻塞）
 
-- **宿主控制台噪声**：每次静默关闭宿主会打印 `Sidebar tab close failed: AuxChatCloseVeto…`。这是宿主对"handler 抛错=保留标签"契约的日志口径，非用户可见界面；若宿主未来提供"异步接管关闭"的契约应切换。
-- **宿主引导气泡模板**：EntryBox 自拼"X还没有X。新建一个，<desc>"句式不受插件控制；新 desc 已无风险句，矛盾断言（AC-U-04）覆盖"未读×引导"组合。
+- **宿主控制台噪声（根因已实锤，见补遗 9）**：每次静默关闭宿主 UI 路径打印一条
+  `Sidebar tab close failed: AuxChatCloseVeto…`（error 级、界面不可见）。抛错否决是宿主
+  文档化的唯一通道，插件侧无法消除；已提 `SEAM-REQUEST` S4（降噪或显式否决返回值）。
+- ~~宿主引导气泡模板~~（撤回，见补遗 10）：当前真页证明宿主按"标题+描述"原样渲染，
+  无自拼模板；旧矛盾句式无法在当前宿主复现，不再作为宿主侧残留记录。
 - **列表闪烁**：等 S1 接缝（docs/SEAM-REQUEST.md）；HideChannel 已备切换位。
 - **render-check.mjs / selfcheck.mjs 为 STALE 参考件**（2026-10-14 标注），不在活门禁内；活门禁清单见下。
 
@@ -54,7 +75,7 @@
 | `npm run mirror-check` | 31 通过 |
 | `npm run hide-check` | 7/7 |
 | `node scripts/integration.mjs` | 32 通过 |
-| `node scripts/e2e-isolated.mjs` | 79 通过（含 E36–E41） |
+| `node scripts/e2e-isolated.mjs` | 80 通过（含 E36–E41 与 G10/WP2.3 闪烁断言；加固了两处日志读取竞态后连续两轮全绿） |
 | visual 场景（真页+截图） | 见验收记录（本文件 §5，跑毕回填） |
 
 ## 5 · 用户视角验收（visual 真页 + 截图存证 tools/visual/evidence/）

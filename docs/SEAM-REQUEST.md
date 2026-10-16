@@ -33,6 +33,18 @@
 **需求**：公开错误携带稳定错误码（如 `dsh/session/fork-unavailable`），并提供宿主级本地化
 映射表；插件只渲染映射结果与兜底句。
 
+## S4 · 关闭处理器否决契约的日志口径（复核后新增，2026-10-16）
+
+**问题（已实锤）**：`ISidebarRight.registerCloseHandler` 的调用是同步的，处理器返回值被忽略
+（`removeAfterCleanup`：`handler(sessionId, tab); commit()`），因此"抛错=保留标签"是**唯一**的
+否决通道——本插件静默关闭协议正是靠它实现"先销毁后移标签"。但宿主 UI 路径在自己的
+`closeTab` 包装里 `console.error("Sidebar tab close failed:", error)`，于是每次合法否决都会在
+控制台打一条错误级日志（用户界面不可见，但污染诊断输出且容易被误读为故障）。
+
+**需求**：其一，对处理器抛错按契约语义降噪（warn 级或可识别的 veto 类名跳过）；其二（更优），
+给处理器一个显式否决返回值或 Promise 语义（如返回 `{ keepOpen: true }` 或 await 后视结果
+commit），让"清理先于移除"不再必须走异常通道。
+
 ## 长期愿望（记录，不阻塞）
 
 - 事件级 `uiVisibility/providerVisibility` 投影标志（ZCode 式"模型全看、界面全空"的原生继承）；

@@ -338,7 +338,7 @@ MIT
 ## 门禁计数（改造后）
 
 verify 30 · race-check 51 · drop-check 36 · mirror-check 31 · hide-check 7 · integration 32 ·
-e2e-isolated 79 · visual ≥50（场景：core-journey/real-roundtrip/multi-unread/copy-walkthrough
+e2e-isolated 80 · visual ≥50（场景：core-journey/real-roundtrip/multi-unread/copy-walkthrough
 (zh+en)/drop-isolation/open-idempotent/pane-layout/mirror-live/attachment-isolation/
 shipped-sidebar；narrow-single 因 DSH 0.2.x 禁用官方右栏后宿主 Web 无法启动而记为验证偏差，
 见 docs/REVIEW-REFACTOR-2026-10-16.md §5）。
