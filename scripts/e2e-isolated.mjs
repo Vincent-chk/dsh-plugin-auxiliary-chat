@@ -352,6 +352,29 @@ try {
     `reclaim of a never-auxiliary session is refused (${String(foreignReclaim?.result?.value?.result?.text).slice(0, 80)})`,
   )
   await rpc('commands/execute', { agentId: foreignId, line: `/aux-end ${JSON.stringify({ sessionId: foreignId })}`, submittedAttachments: [] }, cookie).catch(() => undefined)
+  // ── Issue #2 (occurrence release ≠ user close): the client-side DETACH
+  // sends nothing to the host — a child that was merely unmounted keeps
+  // every artifact and stays reclaimable, which is the remount contract the
+  // client's readBinding → reclaim path relies on.
+  check(existsSync(join(home, 'aux-chat', 'sessions', `${auxId}.json`)), 'E42 a released (unmounted) child keeps its marker')
+  check(readAuxLog().includes('"request/header"'), 'E42 the released child keeps its transcript')
+  let membershipKept = false
+  try {
+    membershipKept = readFileSync(join(home, 'storages', 'workspace.json'), 'utf8').includes(auxId)
+  } catch { /* no workspace store yet */ }
+  check(membershipKept, 'E42 the released child keeps its workspace membership (no ungrouped drift)')
+  const reattach = await rpc('commands/execute', {
+    agentId: auxId,
+    line: `/aux-init ${JSON.stringify({ sessionId: auxId, mirrorOf: 'session-e2e-main-0001', mode: 'reclaim' })}`,
+    submittedAttachments: [],
+  }, cookie)
+  const reattachResult = reattach?.result?.value?.result
+  let reattachOk = false
+  if (reattachResult?.kind === 'success') {
+    const payload = JSON.parse(reattachResult.text)
+    reattachOk = payload.reclaimed === true && payload.info?.sessionId === auxId
+  }
+  check(reattachOk, 'E43 the SAME child re-attaches after the release (remount contract, no fork)')
   // ── v3 creation channel: fork(atSeq:0) + structural parentSession +
   // form-A full-transcript injection (the D1 fix: a fact committed by the
   // parent BEFORE the fork must reach the child's model context).
