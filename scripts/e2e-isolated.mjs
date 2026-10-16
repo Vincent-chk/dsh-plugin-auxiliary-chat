@@ -259,8 +259,20 @@ try {
     },
   }, cookie)
   check(prompted?.result?.ok === true, `prompt accepted on the archived auxiliary session (${String(prompted?.result?.ok)})`)
-  await new Promise((resolve) => setTimeout(resolve, 4000))
-  const auxLogText = (() => {
+  // G10/WP2.3 (documented flicker, insertion half): while the turn runs, the
+  // archive bridge lifts the hide — the row IS list-visible. Together with the
+  // re-hide check below this pins the 1-per-turn flicker; it becomes 0 once
+  // the S1 seam (visibility decoupled from runnability) lands.
+  let midTurnVisible = false
+  for (let i = 0; i < 100 && !midTurnVisible; i += 1) {
+    if (!readArchived().includes(auxId)) midTurnVisible = true
+    else await new Promise((resolve) => setTimeout(resolve, 80))
+  }
+  check(midTurnVisible, 'G10/WP2.3: mid-turn the archive bridge lifted the hide (the documented 1-per-turn list flicker; 0 after the S1 seam)')
+  // The turn runs against a REAL provider: its latency varies run to run, so
+  // poll the log until the request boundary appears (bounded) instead of a
+  // fixed 4s wait that raced on slow turns (observed 2026-10-16).
+  const readAuxLog = () => {
     let projects = []
     try {
       projects = readdirSync(join(home, 'sessions'))
@@ -272,7 +284,12 @@ try {
       } catch { /* keep scanning */ }
     }
     return ''
-  })()
+  }
+  let auxLogText = readAuxLog()
+  for (let i = 0; i < 60 && !auxLogText.includes('"request/header"'); i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    auxLogText = readAuxLog()
+  }
   check(auxLogText.includes('"step/start"'), 'the archived session produced a step/start (the gate did not block it)')
   check(auxLogText.includes('Current runtime context'), 'the FULL pre-step chain ran (runtime context injected — not the round-6 veto)')
   check(auxLogText.includes('"request/header"'), 'the turn reached the model request boundary (a gate-blocked turn never does)')
@@ -498,8 +515,15 @@ try {
         check((payload.inherited?.omitted ?? 0) >= 1, `earlier entries are counted as omitted (${String(payload.inherited?.omitted)})`)
         check((payload.inherited?.entries ?? 0) >= 1, `the newest entries are delivered (${String(payload.inherited?.entries)})`)
       }
-      const longLogPath = findLogPath(home, longChild)
-      const longLog = longLogPath === '' ? '' : readLogText(longLogPath)
+      // The injection is appended (and flushed) asynchronously from the init
+      // command's return; poll briefly instead of racing the flush.
+      let longLogPath = findLogPath(home, longChild)
+      let longLog = longLogPath === '' ? '' : readLogText(longLogPath)
+      for (let i = 0; i < 20 && !longLog.includes('容量上限'); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        longLogPath = findLogPath(home, longChild)
+        longLog = longLogPath === '' ? '' : readLogText(longLogPath)
+      }
       const newestLabel = `TAIL-MARKER-${String(committed).padStart(2, '0')}`
       check(longLog.includes(newestLabel), `the newest parent fact is inside the delivered window (${newestLabel})`)
       check(!longLog.includes('TAIL-MARKER-01'), 'the oldest parent fact was dropped by the budget')
