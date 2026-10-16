@@ -14,7 +14,6 @@
  */
 import { MAX_INHERIT_TOOL_CHARS, buildFullTranscript } from '../mirror.ts'
 
-// copy-truth: inhFull inhWindow inhSummary inhOff inhEmpty
 const passes = []
 const failures = []
 const check = (ok, label) => (ok ? passes.push(label) : failures.push(`FAIL ${label}`))

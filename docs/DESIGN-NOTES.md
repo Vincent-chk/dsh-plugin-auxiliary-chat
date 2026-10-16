@@ -363,3 +363,18 @@ shipped-sidebar；narrow-single 因 DSH 0.2.x 禁用官方右栏后宿主 Web �
   204/219ms、零 veto 噪声、无卡片、无行残留）+ core-journey 10/10 + real-roundtrip
   9/9（新协议下真模型往返全程通过）；e2e 80/80 ×2（G10 观测面升级为实时 session/list，
   与落盘刷盘时序解耦）。
+
+## v6 台账 · 2026-10-16 晚：顶栏去说明文字（页面精简）
+
+- **用户决定**：删除顶栏继承说明句（含模型后缀与悬停详情），保持页面简洁。
+- **实现**：`Panel.tsx` 删除 `inheritanceStatus()`/`sizeText()`；顶栏只保留
+  真实镜像警告、主会话归档提示、「复制结论到主会话」动作；继承结果改为不可见
+  属性 `data-aux-inherited` / `-model` / `-chars`。
+- **字典**：删除 13 键 × 2 语言（86 → 73，zh/en 对齐）。
+- **门禁**：copy-truth 的 `inheritance-bar` 面 → `pane-bar` 面（keys:
+  mirrorWarnings/mainArchived，proof: core-journey.mjs）；旧标记从
+  `mirror-window-check.mjs` 移除。
+- **真机场景**：core-journey / real-roundtrip / copy-walkthrough / drop-isolation /
+  mirror-live 五处断言改为"无说明文字 + 属性可读"。
+- **顺带纠正**：README「关闭即永久删除」条目更新为 removal-first 后的真实行为
+  （旧文仍写"失败保留标签 + 重试关闭"，自第三轮起已不成立）。

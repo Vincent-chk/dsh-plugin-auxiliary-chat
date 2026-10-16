@@ -163,49 +163,6 @@ function EmptyState(props: FrameworkShares & { text: string; hint?: string }): R
   )
 }
 
-/** Human size for the bar (1 decimal above 1k). */
-function sizeText(chars: number): string {
-  return chars >= 1000 ? `${(chars / 1000).toFixed(1)}k` : String(chars)
-}
-
-/**
- * What the panel may CLAIM about inheritance — FACTS only (plan v2 decision:
- * the top bar carries no risk clauses). The bar reports the delivered form
- * measured by the Host, plus the inherited model route (plan P1/WP1.1).
- */
-function inheritanceStatus(
-  props: FrameworkShares,
-  runtime: AuxTabRuntime,
-): { text: string; degraded: boolean; detail: string } {
-  const report = runtime.inherited
-  const modelSuffix = runtime.model === undefined ? '' : tt(props, 'inhModel', { model: runtime.model })
-  if (report === undefined) {
-    return { text: tt(props, 'inhPending') + modelSuffix, degraded: false, detail: tt(props, 'inhPendingDetail') }
-  }
-  const size = sizeText(report.chars)
-  if (report.form === 'none') {
-    return { text: tt(props, 'inhOff') + modelSuffix, degraded: true, detail: tt(props, 'inhOffDetail') }
-  }
-  if (report.form === 'summary') {
-    if (report.chars === 0) {
-      return { text: tt(props, 'inhEmpty') + modelSuffix, degraded: false, detail: tt(props, 'inhEmptyDetail') }
-    }
-    return { text: tt(props, 'inhSummary', { size }) + modelSuffix, degraded: true, detail: tt(props, 'inhSummaryDetail') }
-  }
-  if (report.truncated) {
-    return {
-      text: tt(props, 'inhWindow', { entries: report.entries, size, omitted: report.omitted }) + modelSuffix,
-      degraded: true,
-      detail: tt(props, 'inhWindowDetail'),
-    }
-  }
-  return {
-    text: tt(props, 'inhFull', { entries: report.entries, size }) + modelSuffix,
-    degraded: false,
-    detail: tt(props, 'inhFullDetail'),
-  }
-}
-
 // ── Path B: idempotent guide capsule (打开) ──────────────────────────────────
 
 export function AuxGuideEntry(props: FrameworkShares & { sessionId?: string }): ReactNode {
@@ -377,33 +334,30 @@ export function AuxPaneBody(props: FrameworkShares & TabInfoLike & { sessionId?:
 
   const auxId = runtime.sessionId
   const reference = getController()?.referenceFor(auxId)
+  // Decision 2026-10-16 (evening): the pane bar carries NO inheritance prose —
+  // the page stays clean (the long "临时会话 · 已继承…" sentence is gone, with
+  // its hover detail). The delivered inheritance stays MACHINE-READABLE on the
+  // bar instead (data-aux-inherited / -model / -chars), so the honesty checks
+  // and mirror verification keep their evidence without any visible text.
+  // Only two things may appear: a real mirror warning, and the archived-main
+  // hint — both exceptional states, never decoration.
+  const mirrorWarnings = runtime.warnings.filter((line) => /mirror|section|scope|injection/i.test(line))
   return (
     // data-aux-session pins the pane's session binding into the DOM so visual
     // verification can assert the embedded conversation is bound to the
     // auxiliary session — never to the main one (session isolation).
     <div className="auxc-pane" data-aux-chat="pane" data-aux-session={auxId ?? ''} ref={attachPaneRef}>
-      <div className="auxc-bar">
-        {(() => {
-          const status = inheritanceStatus(props, runtime)
-          const mirrorWarnings = runtime.warnings.filter((line) => /mirror|section|scope|injection/i.test(line))
-          return (
-            <>
-              <span
-                className={status.degraded ? 'auxc-bar-warn' : 'auxc-bar-context'}
-                title={status.detail}
-                data-aux-inherited={runtime.inherited?.form ?? 'unknown'}
-                data-aux-model={runtime.model ?? ''}
-              >
-                {status.text}
-              </span>
-              {mirrorWarnings.length > 0 && (
-                <span className="auxc-bar-warn" title={mirrorWarnings.join('\n')} data-aux-mirror-warnings={mirrorWarnings.length}>
-                  {tt(props, 'mirrorWarnings', { count: mirrorWarnings.length })}
-                </span>
-              )}
-            </>
-          )
-        })()}
+      <div
+        className="auxc-bar"
+        data-aux-inherited={runtime.inherited?.form ?? 'unknown'}
+        data-aux-model={runtime.model ?? ''}
+        data-aux-inherited-chars={runtime.inherited === undefined ? '' : String(runtime.inherited.chars)}
+      >
+        {mirrorWarnings.length > 0 && (
+          <span className="auxc-bar-warn" title={mirrorWarnings.join('\n')} data-aux-mirror-warnings={mirrorWarnings.length}>
+            {tt(props, 'mirrorWarnings', { count: mirrorWarnings.length })}
+          </span>
+        )}
         {ctl !== null && ctl.isMainArchived(runtime.mainSessionId) && (
           <span className="auxc-bar-warn" role="status">
             {tt(props, 'mainArchived')}
