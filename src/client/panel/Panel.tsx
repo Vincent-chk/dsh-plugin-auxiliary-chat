@@ -101,7 +101,10 @@ function FailedCard(props: FrameworkShares & { message: string; onRetry(): void 
  * `closing` state: feedback is immediate; after 10s the copy says the close
  * is STILL running against the original target — never a silent success.
  * (Operational feedback, not a risk warning: it appears only AFTER the user
- * closed, per the silent-close decision.)
+ * closed, per the silent-close decision.) Under the removal-first protocol
+ * (round 3) the framework removes the tab in the same gesture, so these
+ * cards are the DEFENSIVE surface for hosts that kept the tab mounted; the
+ * real-browser acceptance for the normal path is "the card never appears".
  */
 function ClosingCard(props: FrameworkShares & { target: string }): ReactNode {
   const [elapsed, setElapsed] = useState(false)

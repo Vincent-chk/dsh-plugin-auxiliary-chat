@@ -33,7 +33,7 @@
 **需求**：公开错误携带稳定错误码（如 `dsh/session/fork-unavailable`），并提供宿主级本地化
 映射表；插件只渲染映射结果与兜底句。
 
-## S4 · 关闭处理器否决契约的日志口径（复核后新增，2026-10-16）
+## S4 · 关闭处理器否决契约的日志口径（复核后新增，2026-10-16；第三轮更新见下）
 
 **问题（已实锤）**：`ISidebarRight.registerCloseHandler` 的调用是同步的，处理器返回值被忽略
 （`removeAfterCleanup`：`handler(sessionId, tab); commit()`），因此"抛错=保留标签"是**唯一**的
@@ -44,6 +44,13 @@
 **需求**：其一，对处理器抛错按契约语义降噪（warn 级或可识别的 veto 类名跳过）；其二（更优），
 给处理器一个显式否决返回值或 Promise 语义（如返回 `{ keepOpen: true }` 或 await 后视结果
 commit），让"清理先于移除"不再必须走异常通道。
+
+**第三轮状态（2026-10-16 下午）**：本插件已改用 removal-first 协议**绕开**该噪声
+（关闭处理器永不抛错，标签由框架同步移除，销毁在后台收尾；见
+PLAN-ROUND3-SILENT-CLOSE-DENOISE.md 与 visual 场景 silent-close-noise 的零噪声断言）。
+上游诉求不变且新增一条实锤：`place()` 的 `replaceTab` 路径同样调用关闭处理器但
+**没有 try/catch**，任何插件的否决都会炸掉其他插件的 `openTab(replaceTab)` —— 详见
+`docs/UPSTREAM-ISSUES.md` 议题 U2。
 
 ## 长期愿望（记录，不阻塞）
 

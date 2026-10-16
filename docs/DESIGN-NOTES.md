@@ -329,3 +329,24 @@ e2e-isolated 80 · visual ≥50（场景：core-journey/real-roundtrip/multi-unr
 (zh+en)/drop-isolation/open-idempotent/pane-layout/mirror-live/attachment-isolation/
 shipped-sidebar；narrow-single 因 DSH 0.2.x 禁用官方右栏后宿主 Web 无法启动而记为验证偏差，
 见 docs/REVIEW-REFACTOR-2026-10-16.md §5）。
+
+## v5 台账 · 第三轮（2026-10-16 下午）：静默关闭去噪 + 上游草案
+
+- **触发**：二轮复核实锤两问题（sidebarRight 硬注入阻断 Path A；每次合法关闭一条
+  error 级 "Sidebar tab close failed" 控制台噪声）。规划与验收标准：
+  `docs/PLAN-ROUND3-SILENT-CLOSE-DENOISE.md`。
+- **协议变更**：关闭处理器由 veto（抛错保留标签→后台销毁→程序化移除）改为
+  **removal-first**（永不抛错→框架同步移除标签→后台销毁）。删除
+  `CloseVetoError`/`bypassNextClose`；失败后台路径 = 同 operationId 重试一次 →
+  console.warn → 宿主重启清扫兜底。防御面（标签未被宿主移除的非常规情形）
+  维持 closing/closeFailed 卡片与文案，零字典改动。
+- **附带修复（同一改动消除的隐患）**：`place()` 的 replaceTab 路径无 try/catch，
+  旧协议下我们的否决可炸掉其他插件的 replaceTab 打开；新协议永不抛错，隐患归零
+  （上游草案 U2 一并记录）。
+- **根因补证**：10 包硬注入清单 + ui-chat 消费面（仅 3 处可选链接便利）→
+  `docs/UPSTREAM-ISSUES.md` U1/U2/U3。
+- **门禁**：race 62/62（新增 C17/C18/C19）；verify 30；drop 36；mirror 31；hide 7；
+  integration 32；smoke；typecheck；visual silent-close-noise 7/7 ×2（即时消失
+  204/219ms、零 veto 噪声、无卡片、无行残留）+ core-journey 10/10 + real-roundtrip
+  9/9（新协议下真模型往返全程通过）；e2e 80/80 ×2（G10 观测面升级为实时 session/list，
+  与落盘刷盘时序解耦）。

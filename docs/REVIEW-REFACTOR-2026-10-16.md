@@ -93,3 +93,69 @@
   探针控制台证据见 probe-pathA2）。Path A 整体不可启动，属平台约束而非插件缺陷；单栏代码路径
   由 copy 门禁 + 代码审查覆盖，narrow-single.mjs 保留待宿主解耦后启用。
 - 环境性波动处理：宿主欢迎遮罩偶发拦截点击 → 场景加 clearMask/clickThrough 重试守卫（非产品逻辑）。
+
+## 6 · 第三轮：静默关闭去噪（removal-first）+ 上游议题草案
+
+> 2026-10-16 下午 · 输入：§复核补遗实锤的 ①② 两问题 · 规划：`docs/PLAN-ROUND3-SILENT-CLOSE-DENOISE.md`
+
+### 6.1 根因补证（在二轮基础上再钉死一层）
+
+1. **①（sidebarRight 硬注入）**：全宿主 **10 个**客户端包在 `const inject` 数组中硬声明
+   `"sidebarRight"`（ui-chat / deliverables / plan / reference / schedule / sidebar-browser /
+   sidebar-files / sidebar-terminal / skill / subagent）。关键反差：ui-chat 对该服务的全部
+   实际消费只有 3 处**可选**链接打开便利（client.js:12426–12436）+ 1 处 `sidebarRightTabs`
+   读取——会话 UI 本体并不需要它。→ 草案 `docs/UPSTREAM-ISSUES.md` U1。
+2. **②（close-veto 噪声）**：机制逐行钉死——座位 `closeTab` 包装（sidebar-right
+   client.js:9175–9180）`console.error("Sidebar tab close failed")` ← `closeIn` ←
+   `removeAfterCleanup`（:6439，同步调用、返回值忽略、抛错=跳过 commit）。**附加实锤**：
+   `place()` 的 `replaceTab` 路径同样经过 `removeAfterCleanup` 但无 try/catch —— 我们的
+   否决本可能炸掉其他插件的 replaceTab 打开。→ 草案 U2。
+
+### 6.2 改动（WP-A，全部通过门禁）
+
+- `src/client/store.ts`：`handleTabClose` **永不抛错**（removal-first：ready/closeFailed
+  也是"启动后台清理 + 放行"）；删除 `CloseVetoError` 与 `bypassNextClose`（协议尾部的
+  程序化 closeIn 由 `closed` 相位守卫放行）。`startClose` 增加两条后台路径：runtime 已随
+  标签移除时的失败 → **同 operationId 自动重试一次**（宿主对部分拆除的第二调用会经
+  not-registered 收敛）→ 仍失败 `console.warn`；看门狗对已消失 runtime 只 warn。
+  防御面（非标准宿主保留标签时）维持 closeFailed 卡片 + 重试不动。
+- `src/client/index.tsx` / `Panel.tsx`：注册处与卡片注释更新为新协议语义（文案零改动，
+  copy-gates 不动）。
+- 测试：`race-check.mjs` 语义翻转（veto 断言→无抛错断言）+ 新增 C17（移除先行时序：
+  手势返回即 abort，后台 dispose 恰好一次、binding 清除）、C18（后台失败自动重试同
+  operationId 且静默收敛）、C19（持续失败恰好一条 warn、无未处理 rejection）。
+- 新 visual 场景（工作区 `tools/visual/scenarios/silent-close-noise.mjs`）：真浏览器
+  关闭 → 标签**同一手势内消失**（实测 204/219ms）、closing 卡片**从不渲染**、控制台
+  **零** "Sidebar tab close failed" 与零 aux 相关 error/pageerror、关闭的会话**不新增**
+  列表行、reload-binding 清除。连续两轮 7/7。
+
+### 6.3 验收记录（AC 对照）
+
+| AC | 结果 |
+| --- | --- |
+| AC-A1（全相位无抛错 + 并发一次 dispose） | race C05/C09/C14/C17 ✓ |
+| AC-A2（真实时序后台收尾） | race C17 ✓ |
+| AC-A3（重试收敛 / 看门狗 warn） | race C18/C19 ✓ |
+| AC-A4（既有不变量） | race C01–C04/C08/C10–C13/C15/C16 ✓（62/62） |
+| AC-A5（快速门禁） | verify 30 · drop 36 · mirror 31 · hide 7 · integration 32 · smoke · typecheck ✓ |
+| AC-B1（visual） | silent-close-noise 7/7 ×2 · core-journey 10/10 · real-roundtrip 见下 |
+| AC-C1（上游草案） | docs/UPSTREAM-ISSUES.md U1/U2/U3 ✓ |
+| AC-D1（全量） | e2e-isolated ×2 全绿（见 §6.4） |
+| AC-D2（审查+推送） | 本节即审查记录；推送 refactor/ux-polish-v2 |
+
+### 6.4 e2e（第三轮后 ×2）
+
+80/80 × 2 连续全绿（/tmp 证据日志 e2e-r3-a4 / e2e-r3-b）。本轮顺带把 G10/WP2.3 的观测面
+从**落盘文件**升级为**实时 session/list**：落盘的 workspace.json 会把"短回合的解档+重档"
+合并成一次刷盘（门禁通过证明实时集合确实抬起过），文件观测在快回合上天然闪烁；实时列表
+正是侧栏读取的用户可见面，断言从此与刷盘时序解耦（探测时验证 args 形状为 `{_request:{}}`）。
+另：G10 的时间盒从 8s 放宽到 60s（回合启动落后于 prompt-accept 的队列去抖+供应商延迟）。
+
+### 6.5 设计取舍记录
+
+- **放弃"先销毁后移标签"的强时序**：veto 是唯一保留通道且必然产生 error 级噪声（②实锤），
+  而标签消失时 会话已处于归档隐藏态，后台销毁对用户不可见 —— 时序弱化的用户可见代价为零，
+  换来零噪声 + 即时消失 + replaceTab 隐患消除。失败兜底：同 opId 重试一次 → warn →
+  宿主重启代际清扫（sweep）。
+- **closing/closeFailed 卡片保留为防御面**：生产路径标签同手势消失、卡片永不渲染
+  （visual 断言）；非标准宿主（或 race-check 直驱）下仍如实展示。文案与 copy-gates 零改动。
