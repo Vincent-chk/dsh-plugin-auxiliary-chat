@@ -12,6 +12,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { runCopyChecks, runCopyTruthChecks } from './copy-gates.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
@@ -98,6 +99,11 @@ if (flag !== -1) {
     failures.push(`FAIL profile cannot resolve ${pkg.name}: ${String(error.message)}`)
     failures.push('     fix: add the dependency to the profile package.json and run pnpm install, or `dsh plugin --profile <p> add <spec>`')
   }
+}
+
+// ── copy governance gates (refactor plan v2, P0/WP0.2 + WP0.3) ──────────────
+for (const result of [...runCopyChecks(root), ...runCopyTruthChecks(root)]) {
+  check(result.ok, result.message)
 }
 
 for (const line of notes) console.log(line)

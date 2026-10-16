@@ -20,6 +20,7 @@
  */
 import type { ReactNode } from 'react'
 import type { SessionListStateLike } from '../types.ts'
+import { copy } from '../../locale.ts'
 
 /** Lifecycle fields this component reads off a Session snapshot. */
 export interface SessionSnapshotLike {
@@ -79,15 +80,24 @@ function FixedChatConversationView(props: {
 }
 
 /** Shown when the Conversation Factory is absent, so the panel is never blank. */
-function ConversationPlaceholder(): ReactNode {
+function ConversationPlaceholder(props: { title: string; body: string }): ReactNode {
   return (
     <div className="auxc-placeholder" role="status">
-      <p className="auxc-placeholder-title">对话界面暂不可用</p>
-      <p className="auxc-placeholder-body">
-        ui-conversation 未装配或该会话尚未就绪。辅助会话本身仍可在主机侧运行，稍后重新打开本面板即可。
-      </p>
+      <p className="auxc-placeholder-title">{props.title}</p>
+      <p className="auxc-placeholder-body">{props.body}</p>
     </div>
   )
+}
+
+/** Resolve one dictionary key through the framework share when present. */
+function ttView(props: AuxChatBodyProps, key: string): string {
+  let raw: string | undefined
+  try {
+    raw = props.t?.(key)
+  } catch {
+    raw = undefined
+  }
+  return raw ?? copy(key)
 }
 
 /**
@@ -107,7 +117,8 @@ export function AuxChatBody(props: AuxChatBodyProps): ReactNode {
     return id === undefined ? undefined : state.byId[id]?.blank
   })
 
-  if (props.renderFactorySlot === undefined) return <ConversationPlaceholder />
+  if (props.renderFactorySlot === undefined)
+    return <ConversationPlaceholder title={ttView(props, 'convUnavailable')} body={ttView(props, 'convUnavailableBody')} />
 
   // phase/hero derivation, transparently ported from the shipped embedded-chat
   // consumer (`$PKG/dsh-client-ui-subagent/lib/client.js:776-787`): the shell
@@ -136,7 +147,7 @@ export function AuxChatBody(props: AuxChatBodyProps): ReactNode {
         { variant: 'embedded', phase, hero: false },
         {
           slots: { views: FixedChatConversationView },
-          fallback: <ConversationPlaceholder />,
+          fallback: <ConversationPlaceholder title={ttView(props, 'convUnavailable')} body={ttView(props, 'convUnavailableBody')} />,
         },
       )}
     </div>

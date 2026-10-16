@@ -62,6 +62,72 @@ type ArchiveRegistry = {
   archiveSession?(sessionId: string, options?: { readonly stopActivity?: boolean }): Promise<void>
 }
 
+
+/**
+ * Visibility face a future DSH seam may provide (refactor plan v2 P2/WP2.2,
+ * seam request S1): hide a session from lists/search WITHOUT touching its
+ * runnability — the decoupling ZCode has natively and DSH lacks today.
+ */
+export interface SessionVisibilityFace {
+  hideFromLists?(sessionId: string): Promise<void> | void
+  revealInLists?(sessionId: string): Promise<void> | void
+}
+
+export type HideChannelKind = 'archive-bridge' | 'native'
+
+export interface ResolvedHideChannel {
+  readonly kind: HideChannelKind
+  readonly face: SessionVisibilityFace | undefined
+}
+
+/** Probe the optional native visibility face; absent today, wired for S1. */
+export function probeVisibilityFace(deps: HostDeps): SessionVisibilityFace | undefined {
+  try {
+    const face = deps.ctx.get('sessionVisibility') as SessionVisibilityFace | undefined
+    return face !== undefined && face !== null && typeof face.hideFromLists === 'function' ? face : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Resolve which hiding channel owns this boot: config override → native face
+ * → archive-bridge fallback. `native` without a face degrades with a trace.
+ */
+export function resolveHideChannel(deps: HostDeps): ResolvedHideChannel {
+  const preference = deps.hideChannel ?? 'auto'
+  const face = probeVisibilityFace(deps)
+  if (preference === 'archive') return { kind: 'archive-bridge', face: undefined }
+  if (face !== undefined) return { kind: 'native', face }
+  if (preference === 'native') {
+    deps.trace?.('hide:native-requested-but-absent; falling back to archive-bridge')
+  }
+  return { kind: 'archive-bridge', face: undefined }
+}
+
+/**
+ * Hide one owned session through the resolved channel. `archive` is the
+ * bridge implementation injected by create.ts (it owns the registry write).
+ */
+export async function hideThroughChannel(
+  deps: HostDeps,
+  channel: ResolvedHideChannel,
+  sessionId: string,
+  warnings: string[],
+  archive: (deps: HostDeps, sessionId: string, warnings: string[]) => Promise<unknown>,
+): Promise<void> {
+  if (channel.kind === 'native' && channel.face?.hideFromLists !== undefined) {
+    try {
+      await channel.face.hideFromLists(sessionId)
+      deps.trace?.(`hide:native ${sessionId}`)
+      return
+    } catch (error) {
+      warnings.push(`native visibility hide failed (${error instanceof Error ? error.message : String(error)}); archived instead`)
+    }
+  }
+  await archive(deps, sessionId, warnings)
+}
+
 /** Read the workspace registry off the context, when it is present. */
 function registryOf(deps: HostDeps): ArchiveRegistry | undefined {
   try {
@@ -142,6 +208,9 @@ async function rearchiveWhenIdle(deps: HostDeps, sessionId: string): Promise<voi
       deps.trace?.(`hide:rehide-skipped-running ${sessionId}`)
       return
     }
+    // Native-channel sessions are hidden without archiving; archiving them
+    // would re-couple visibility to runnability (plan v2 P2/WP2.2).
+    if (resolveHideChannel(deps).kind === 'native') return
     if (!deps.owned.has(sessionId)) return
     const registry = registryOf(deps)
     if (typeof registry?.archiveSession !== 'function') return

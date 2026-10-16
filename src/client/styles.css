@@ -382,68 +382,24 @@
   background: var(--dsw-alias-state-business-primary, currentColor);
 }
 
-/* Inline close confirmation (replaces the former modal): one slim bar at the
-   pane top — the guard rail stays, the interruption does not. */
-.auxc-confirm {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: none;
-  padding: 8px 12px;
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-interactive-bg-hover);
-  border-bottom: 0.5px solid var(--dsw-alias-border-l3);
+/* Single-column degradation for narrow windows (refactor plan v2 P2/WP2.1):
+   the auxiliary session takes the whole column and a back affordance returns
+   to the main conversation. Replaces the former dead-end "too narrow" card. */
+.auxc-column-single {
+  width: 100% !important;
+  min-width: 0;
 }
 
-.auxc-confirm-text {
+.auxc-column-single .auxc-head {
+  gap: 8px;
+}
+
+.auxc-column-single .auxc-subtitle {
   flex: 1;
   min-width: 0;
-  color: var(--dsw-alias-label-secondary);
-}
-
-.auxc-confirm-actions {
-  display: flex;
-  gap: 8px;
-  flex: none;
-}
-
-.auxc-confirm-cancel,
-.auxc-confirm-destroy {
-  font: inherit;
-  font-size: 12px;
-  line-height: 18px;
-  border-radius: var(--dsw-radius-sm);
-  padding: 3px 10px;
-  cursor: pointer;
-  border: none;
-}
-
-.auxc-confirm-cancel {
-  color: var(--dsw-alias-label-secondary);
-  background: transparent;
-}
-
-.auxc-confirm-cancel:hover {
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-interactive-bg-hover-solid);
-}
-
-.auxc-confirm-destroy {
-  color: var(--dsw-alias-state-error-primary, #e5484d);
-  background: transparent;
-  border: 0.5px solid var(--dsw-alias-state-error-primary, #e5484d);
-}
-
-.auxc-confirm-destroy:hover:not(:disabled) {
-  background: var(--dsw-alias-state-error-primary, #e5484d);
-  color: #fff;
-}
-
-.auxc-confirm-destroy:disabled {
-  opacity: 0.5;
-  cursor: default;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* File-drop target feedback for an auxiliary surface (client/drop-router.ts).

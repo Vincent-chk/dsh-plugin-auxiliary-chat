@@ -14,7 +14,7 @@
     "verbatimModuleSyntax": true,
     "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
-    "types": [],
+    "types": ["node"],
     "baseUrl": ".",
     "paths": {
       "@deepseek-ai/cordis": ["/Users/a1-6/.dsh/profiles/node_modules/@deepseek-ai/cordis"],

@@ -18,6 +18,7 @@
  * @module host/apply
  */
 import { randomUUID } from 'node:crypto'
+import { msg } from '../locale.ts'
 import { resolveDshHome } from './env.ts'
 import { bestEffortCleanup, initAuxSession } from './create.ts'
 import { installArchiveStepBridge, installIdleRearchiver } from './hide.ts'
@@ -72,7 +73,11 @@ export const name = 'aux-chat'
 export const Config =
   z === undefined
     ? undefined
-    : z.object({ hideFromSidebar: z.boolean().default(true), mirrorHistory: z.boolean().default(true), mirrorMaxChars: z.number().default(100_000) })
+    : z.object({
+        hideFromSidebar: z.boolean().default(true),
+        mirrorHistory: z.boolean().default(true),
+        mirrorMaxChars: z.number().default(100_000),
+      })
 
 /** Config as `apply` reads it, defaults included. */
 export interface AuxChatConfig {
@@ -87,6 +92,7 @@ export interface AuxChatConfig {
    * turn is running) are documented in `src/host/hide.ts`.
    */
   readonly hideFromSidebar?: boolean
+  readonly hideChannel?: 'auto' | 'archive' | 'native'
   /**
    * Mirror the main session's CONTENT — the conversation summary, its rendered
    * system prompt and its dynamic context snapshot — into the auxiliary
@@ -110,8 +116,8 @@ const DESCRIPTIONS = {
   // docs/DESIGN-NOTES.md "四个平台约束"). The payload schema stays documented in
   // the file header comment — the menu row should say only "internal, do not
   // invoke by hand".
-  init: '内部指令：辅助会话初始化（请勿手动调用）',
-  end: '内部指令：销毁辅助会话（请勿手动调用）',
+  init: msg('cmdInitDesc'),
+  end: msg('cmdEndDesc'),
 } as const
 
 /**
@@ -173,6 +179,8 @@ export function createHostDeps(ctx: HostContext, config?: AuxChatConfig, owned: 
     // schema-validated, raw passthrough when the schema could not be resolved
     // (`{}`), and a direct `apply(ctx)` call.
     hideFromSidebar: config?.hideFromSidebar !== false,
+    hideChannel:
+      config?.hideChannel === 'archive' || config?.hideChannel === 'native' ? config.hideChannel : 'auto',
     // Opt-OUT, because mirroring is the feature the panel exists for.
     mirrorHistory: config?.mirrorHistory !== false,
     mirrorMaxChars:

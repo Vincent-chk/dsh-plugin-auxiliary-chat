@@ -341,6 +341,7 @@ try {
   check(typeof forkChild === 'string' && forkChild.startsWith('session-'), `fork(atSeq:0) returned a server-minted child (${String(forkChild)})`)
   if (typeof forkChild === 'string' && forkChild !== '') {
     const childLogPath = findLogPath(home, forkChild)
+    let forkInheritedEntries = 0
     const childLogBefore = childLogPath === '' ? '' : readLogText(childLogPath)
     check(childLogBefore.includes('"parentSession":"session-e2e-main-0001"'), 'the child header durably carries parentSession (server-side binding)')
     check(!childLogBefore.includes('ZEBRA-42'), 'the fork child inherited NO parent events (empty prefix — nothing can render as bubbles)')
@@ -360,6 +361,9 @@ try {
       submittedAttachments: [],
     }, cookie)
     const initForkResult = initFork?.result?.value?.result
+    if (initForkResult?.kind === 'success') {
+      try { forkInheritedEntries = JSON.parse(initForkResult.text)?.inherited?.entries ?? 0 } catch { forkInheritedEntries = 0 }
+    }
     check(initForkResult?.kind === 'success', `fork-child init succeeded (${String(initForkResult?.kind)}: ${String(initForkResult?.text).slice(0, 120)})`)
     if (initForkResult?.kind === 'success') {
       const payload = JSON.parse(initForkResult.text)
@@ -375,18 +379,56 @@ try {
       check(mirrorWarnings.length === 0, `init reports no mirror warnings${mirrorWarnings.length === 0 ? '' : `: ${mirrorWarnings.join(' | ').slice(0, 200)}`}`)
     }
     const childLogAfter = readLogText(childLogPath)
+    const inheritedEntries = forkInheritedEntries
     check(childLogAfter.includes('"aux-chat-mirror"'), 'the child log carries the form-A injection (source kind aux-chat-mirror)')
     check(childLogAfter.includes('ZEBRA-42'), 'the injection contains the parent fact committed BEFORE the fork (D1 fixed)')
+    // Plan v2 P2/WP2.3 + P3/WP3.1 (E36-E38): the form-A injection is a
+    // STRUCTURED rendering (role headers per entry) and the child title stays
+    // pinned with the recognisable prefix on the real stack.
+    check(childLogAfter.includes('## User (seq'), 'E36 the form-A injection carries user role headers (structured mirror)')
+    const headerCount = (childLogAfter.match(/## (?:User|Assistant|Tool result) \(seq /g) ?? []).length
+    check(
+      headerCount >= Math.max(1, inheritedEntries),
+      `E37 every delivered entry carries a role header (${String(headerCount)} headers / ${String(inheritedEntries)} entries)`,
+    )
+    check(childLogAfter.includes('[辅助]'), 'E38 the child title carries the [辅助] prefix on the real stack')
     const mainLogPath = findLogPath(home, 'session-e2e-main-0001')
     const mainLogText = mainLogPath === '' ? '' : readLogText(mainLogPath)
     check(!mainLogText.includes('aux-chat-mirror') && !mainLogText.includes(forkChild), 'the parent log carries no auxiliary trace (R06 holds on the fork channel)')
     check(readArchived().includes(forkChild), 'the fork child is archived (hidden) like every auxiliary session')
     const endFork = await rpc('commands/execute', {
       agentId: forkChild,
-      line: `/aux-end ${JSON.stringify({ sessionId: forkChild })}`,
+      line: `/aux-end ${JSON.stringify({ sessionId: forkChild, operationId: 'op-e2e-dup' })}`,
       submittedAttachments: [],
     }, cookie)
     check(endFork?.result?.value?.result?.kind === 'success', 'the fork child is destroyed through the same close protocol')
+    // E39: silent-close idempotency — a repeated close with the SAME operation
+    // id converges instead of erroring (the client relies on this to treat
+    // "already gone" as success without asking the user anything).
+    const endForkAgain = await rpc('commands/execute', {
+      agentId: forkChild,
+      line: `/aux-end ${JSON.stringify({ sessionId: forkChild, operationId: 'op-e2e-dup' })}`,
+      submittedAttachments: [],
+    }, cookie)
+    check(
+      String(endForkAgain?.result?.value?.result?.text ?? '').startsWith('aux-chat/not-registered:'),
+      'E39 a repeated close after full destroy converges via the not-registered signal (the client maps it to success)',
+    )
+    // E40: destruction is complete — the hidden row leaves the archive set and
+    // the log directory is gone (silent close must still be a FULL delete).
+    check(readArchived().includes(forkChild) === false, 'E40a the destroyed child leaves the archive set')
+    check(findLogPath(home, forkChild) === '', 'E40b the destroyed child log directory is removed')
+    // E41: an unknown id is refused with the convergence signal the client
+    // recognises (aux-chat/not-registered), never a silent success.
+    const endForeign = await rpc('commands/execute', {
+      agentId: forkChild,
+      line: `/aux-end ${JSON.stringify({ sessionId: 'session-never-created-e2e' })}`,
+      submittedAttachments: [],
+    }, cookie)
+    check(
+      String(endForeign?.result?.value?.result?.text ?? '').startsWith('aux-chat/not-registered:'),
+      `E41 an unknown id is refused with the not-registered signal (${String(endForeign?.result?.value?.result?.text).slice(0, 60)})`,
+    )
   }
 
   // ── over-budget parent: the window must be a NEWEST TAIL, and the mirror

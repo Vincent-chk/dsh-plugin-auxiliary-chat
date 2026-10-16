@@ -14,6 +14,7 @@
  */
 import { MAX_INHERIT_TOOL_CHARS, buildFullTranscript } from '../mirror.ts'
 
+// copy-truth: inhFull inhWindow inhSummary inhOff inhEmpty
 const passes = []
 const failures = []
 const check = (ok, label) => (ok ? passes.push(label) : failures.push(`FAIL ${label}`))
@@ -118,6 +119,47 @@ const textOf = (entry) => entry.text
   const window = buildFullTranscript(session, 100_000, trace)
   check(window !== undefined, 'W07 a huge tool result still yields a window')
   check(window.chars <= MAX_INHERIT_TOOL_CHARS + 200, `W07 tool results are condensed (${String(window?.chars)} chars)`)
+}
+
+
+// ── W08–W15: structural markers (plan v2 P3/WP3.1, goal G10) ───────────────
+{
+  const events = [
+    { type: 'user/message', data: { source: { kind: 'user' } }, message: { content: [{ type: 'text', text: 'run the tests' }] } },
+    {
+      type: 'assistant/message',
+      data: { source: { kind: 'model' } },
+      message: {
+        content: [
+          { type: 'reasoning', text: 'hmm' },
+          { type: 'text', text: 'I will check' },
+          { type: 'tool-call', name: 'read', arguments: '{}' },
+          { type: 'tool-call', name: 'grep', arguments: '{}' },
+        ],
+      },
+    },
+    {
+      type: 'assistant/message',
+      data: { source: { kind: 'model' } },
+      message: { content: [{ type: 'tool-call', name: 'edit', arguments: '{}' }, { type: 'text', text: 'done' }] },
+    },
+    { type: 'tool/result', data: { source: { kind: 'tool' } }, message: { content: [{ type: 'text', text: 'ok output' }] } },
+  ]
+  const session = {
+    surface: { nodes: events.map((_, index) => index) },
+    snapshotEvents: () => events,
+    deriveEventMessage: (event) => event.message,
+  }
+  const window = buildFullTranscript(session, 100_000, trace)
+  const text = window?.text ?? ''
+  check(text.includes('[reasoning omitted ×1]'), 'W08 reasoning blocks are declared omitted')
+  check(text.includes('[tool calls ×2: read, grep]'), 'W09 multi-tool entries carry a count+names marker')
+  check(!text.includes('[tool calls ×1'), 'W10 single-tool entries stay noise-free')
+  check(text.includes('## User (seq 0)'), 'W11 user entries carry a role header')
+  check(text.includes('## Assistant (seq 1)'), 'W12 assistant entries carry a role header')
+  check(text.includes('[called read({})]'), 'W13 tool calls keep their per-call marker')
+  check(text.indexOf('## User (seq 0)') < text.indexOf('## Assistant (seq 1)'), 'W14 chronological order preserved')
+  check(text.includes('## Tool result (seq 3)'), 'W15 tool results carry their own role header')
 }
 
 for (const line of passes) console.log(`ok   ${line}`)
