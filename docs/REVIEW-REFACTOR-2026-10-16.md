@@ -159,3 +159,38 @@
   宿主重启代际清扫（sweep）。
 - **closing/closeFailed 卡片保留为防御面**：生产路径标签同手势消失、卡片永不渲染
   （visual 断言）；非标准宿主（或 race-check 直驱）下仍如实展示。文案与 copy-gates 零改动。
+
+## 7 · 界面精简：移除顶栏继承说明条（2026-10-16 晚）
+
+> 用户决定："删去顶部的'临时会话 · 已继承主会话最近 N 条 · …k 字符（较早 M 条超出预算） ·
+> 模型/权限继承自创建时的主会话（…），可独立修改'这一类的说明性文字，保持页面简洁。"
+
+### 7.1 改了什么
+
+- **删除可见文字**：顶栏（`.auxc-bar`）不再渲染继承说明句的**任何**形态
+  （pending / off / empty / summary / window / full 六种文案 + `inhModel` 模型后缀），
+  连同它们的长按/悬停详情（`title`）与 `auxc-bar-context`/`auxc-bar-warn` 的降级着色。
+  页面顶栏现在只剩：**真实镜像警告**（`mirrorWarnings`，仅有宿主报告问题时出现）、
+  **主会话已归档提示**（仅在归档态出现）、以及「复制结论到主会话」动作。
+- **保留不可见事实**：交付继承结果降级为顶栏上的机器可读属性
+  `data-aux-inherited`（form）、`data-aux-model`、`data-aux-inherited-chars`（字符数），
+  使"如实告知"这一自检属性继续可验证（mirror-live / drop-isolation / core-journey）。
+- **字典收缩**：`src/locale.ts` 删除 13 个键 × 2 语言（86 → 73），zh/en 键位仍对齐。
+- **门禁同步**：`copy-gates.mjs` 的 `inheritance-bar` 面替换为 `pane-bar` 面
+  （只约束剩下两句告警文案：`mirrorWarnings` / `mainArchived`），行为证明标记移到
+  `tools/visual/scenarios/core-journey.mjs`；`mirror-window-check.mjs` 中的旧
+  `copy-truth:` 标记随之删除（其 31 项预算行为检查不变）。
+
+### 7.2 取舍记录（诚实性如何保持）
+
+被删除的说明条原本承担"面板必须如实说明继承了什么"的职责（2026-10-14 的实锤缺陷：
+会话没有继承内容而面板宣称"已引用主会话上下文"）。移除文字后，诚实性由三处承接：
+
+1. **数据属性**：form / chars / model 仍可从 DOM 读取，真机场景继续断言
+   （含"降级可检测"：form ≠ full 时 chars 仍非空）；
+2. **告警只在真实异常时出现**：镜像失败会进入 `runtime.warnings` 并渲染为警告条，
+   因此"静默成功、静默失败"不会发生——失败态可见，正常态不打扰；
+3. **文案字典仍是单源**：删除后不存在"面板措辞与实际交付不符"的可漂移文本。
+
+用户可见代价（已确认接受）：正常继承过程不再可见，用户无法从界面判断本次继承是
+全量、尾窗还是摘要；需要该信息时看 `data-aux-inherited*` 属性或宿主日志。

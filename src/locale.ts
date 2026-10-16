@@ -10,8 +10,11 @@
  * warning/state string to the test that proves the behaviour it describes.
  *
  * Decision 2026-10-16: close is SILENT. This dictionary therefore
- * contains NO pre-close risk warnings ("永久删除/无法恢复/销毁" clauses are gone);
- * the top bar reports inheritance FACTS only.
+ * contains NO pre-close risk warnings ("永久删除/无法恢复/销毁" clauses are gone).
+ * Decision 2026-10-16 (evening): the pane bar shows NO inheritance prose at
+ * all (the "临时会话 · 已继承…" sentence and its hover detail are gone, page
+ * kept clean); the delivered inheritance is exposed as DOM data attributes
+ * instead. Only real mirror warnings and the archived-main hint remain.
  *
  * @module client/locale
  */
@@ -63,20 +66,7 @@ export const zh: Record<string, string> = {
   srUnread: '，有未读回复',
   liveDot: '有存活的辅助会话',
 
-  // ── inheritance fact bar (facts only, no risk clauses) ────────────────
-  inhPending: '临时会话 · 等待继承结果',
-  inhPendingDetail: '尚未收到主机的继承结果。',
-  inhOff: '临时会话 · 未继承主会话上下文',
-  inhOffDetail: 'mirrorHistory 已关闭，本次没有把主会话内容交给本会话的模型。',
-  inhEmpty: '临时会话 · 主会话当前没有可继承的已提交记录',
-  inhEmptyDetail: '创建这一刻主会话的已提交转录为空（例如新会话、或首轮尚未提交），因此没有内容可继承。',
-  inhSummary: '临时会话 · 已继承主会话摘要 {size} 字符（超长会话降级，非逐字历史）',
-  inhSummaryDetail: '主会话过长，只有压缩摘要进入本会话的模型上下文（系统提示词 section），不是逐字转录。',
-  inhWindow: '临时会话 · 已继承主会话最近 {entries} 条 · {size} 字符（较早 {omitted} 条超出预算）',
-  inhWindowDetail: '完整的已提交转录超过 mirrorMaxChars 预算，只注入了最近的连续一段（隐藏消息，模型可见、聊天页不显示气泡）。',
-  inhFull: '临时会话 · 已继承主会话上下文 {entries} 条 · {size} 字符',
-  inhFullDetail: '创建瞬间的已提交转录整段注入为一条隐藏消息：模型可见，聊天页按设计不显示为气泡。',
-  inhModel: ' · 模型/权限继承自创建时的主会话（{model}），可独立修改',
+  // ── pane bar: exceptional states only (no inheritance prose) ──────────
   mirrorWarnings: '镜像警告 {count} 条',
   mainArchived: '主会话已归档：参考历史已冻结，本辅助会话不会随归档停止。',
 
@@ -165,19 +155,6 @@ export const en: Record<string, string> = {
   srUnread: ', unread replies',
   liveDot: 'live side chats',
 
-  inhPending: 'Temporary · awaiting inheritance result',
-  inhPendingDetail: 'The host has not reported the inheritance result yet.',
-  inhOff: 'Temporary · main context not inherited',
-  inhOffDetail: 'mirrorHistory is off; the main content was not given to this session’s model.',
-  inhEmpty: 'Temporary · main session has no committed records to inherit',
-  inhEmptyDetail: 'At creation the main session’s committed transcript was empty (new session, or first turn not committed), so there was nothing to inherit.',
-  inhSummary: 'Temporary · inherited a {size}-char summary of the main session (long-session downgrade, not verbatim)',
-  inhSummaryDetail: 'The main session is too long; only a compressed summary entered this session’s model context (system-prompt section), not a verbatim transcript.',
-  inhWindow: 'Temporary · inherited the latest {entries} main messages · {size} chars (older {omitted} over budget)',
-  inhWindowDetail: 'The full committed transcript exceeded the mirrorMaxChars budget; only the most recent contiguous window was injected (hidden message: model-visible, never drawn as bubbles).',
-  inhFull: 'Temporary · inherited {entries} main messages · {size} chars',
-  inhFullDetail: 'The committed transcript at creation was injected as one hidden message: model-visible, never drawn as bubbles by design.',
-  inhModel: ' · model/permissions inherited from the main session at creation ({model}); adjustable here',
   mirrorWarnings: '{count} mirror warnings',
   mainArchived: 'Main session archived: the reference history is frozen; this side chat keeps running.',
 

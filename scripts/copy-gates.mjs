@@ -102,7 +102,7 @@ const SURFACES = [
   { surface: 'closing', keys: ['closingTitle', 'closingBody', 'closingBodyLong'], proof: 'src/client/__selfcheck__/race-check.mjs' },
   { surface: 'closeFailed', keys: ['closeFailedTitle', 'closeFailedBody', 'retryClose'], proof: 'src/client/__selfcheck__/race-check.mjs' },
   { surface: 'ended', keys: ['endedTitle', 'endedDefault'], proof: 'src/client/__selfcheck__/race-check.mjs' },
-  { surface: 'inheritance-bar', keys: ['inhFull', 'inhWindow', 'inhSummary', 'inhOff', 'inhEmpty'], proof: 'src/host/__selfcheck__/mirror-window-check.mjs' },
+  { surface: 'pane-bar', keys: ['mirrorWarnings', 'mainArchived'], proof: '../tools/visual/scenarios/core-journey.mjs' },
   { surface: 'handoff', keys: ['handoffDrafted', 'handoffNotify', 'handoffClipboard'], proof: '../tools/visual/scenarios/core-journey.mjs' },
 ]
 
