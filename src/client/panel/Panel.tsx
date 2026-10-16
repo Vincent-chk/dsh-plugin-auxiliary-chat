@@ -4,17 +4,26 @@
  * Path B (live): a tab type in the shipped right Sidebar — `AuxGuideEntry`
  * (idempotent 打开), `AuxNewMenu` (explicit 新建), `AuxPaneTabTitle`
  * (numbered chip + running/unread semantics), `AuxPaneBody` (creating /
- * failed / ready + close confirmation).
+ * failed / ready / closing / closeFailed / ended).
  *
  * Path A (fallback when the shipped Sidebar is absent): frame-owned column
- * and a conversation-header toggle.
+ * and a conversation-header toggle; narrow windows degrade to SINGLE-COLUMN
+ * mode instead of a dead-end card (plan v2 P2/WP2.1).
+ *
+ * Copy policy (plan v2 P0): every user-visible string resolves through the
+ * central dictionary (`../locale.ts`); this file contains no Han literals
+ * outside comments (enforced by scripts/copy-check.mjs).
+ *
+ * Close policy (plan v2 decision 2026-10-16): SILENT — no confirmation bar,
+ * no risk warnings; the store's close protocol owns disposal and removal.
  * @module client/panel/Panel
  */
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { SLOT_AUX_CHAT } from '../../contract.ts'
 import { AuxChatBody } from './ChatView.tsx'
 import { EmptyGlyph, IconClose, IconPanelRight } from './icons.tsx'
-import { CloseVetoError, type AuxTabRuntime, type AuxChatController } from '../store.ts'
+import { copy, substitute } from '../../locale.ts'
+import type { AuxTabRuntime, AuxChatController } from '../store.ts'
 import type {
   FrameworkShares,
   SessionListStateLike,
@@ -22,7 +31,6 @@ import type {
   TabInfoLike,
 } from '../types.ts'
 
-void CloseVetoError
 void AuxChatBody
 
 // ── controller handle (bound by the root effect in index.tsx) ──────────────
@@ -37,8 +45,8 @@ export function getController(): AuxChatController | undefined {
 
 /**
  * Subscribe the controller AND re-render on every store update: the snapshot
- * is a fresh revision token, and the controller is read imperatively after the
- * re-render (its own identity is deliberately stable).
+ * is a fresh revision token, and the controller is read imperatively after
+ * the re-render (its own identity is deliberately stable).
  */
 function useController(): AuxChatController | null {
   useSyncExternalStore(
@@ -49,45 +57,53 @@ function useController(): AuxChatController | null {
   return controller ?? null
 }
 
-function t(props: FrameworkShares, key: string): string {
+/**
+ * Translate one dictionary key through the framework locale share when it is
+ * available (so host language switches apply), falling back to the plugin's
+ * own zh dictionary; `{vars}` are substituted either way.
+ */
+function tt(props: FrameworkShares, key: string, vars?: Record<string, string | number>): string {
+  let raw: string | undefined
   try {
-    return props.t?.(key) ?? key
+    raw = props.t?.(key)
   } catch {
-    return key
+    raw = undefined
   }
+  return substitute(raw ?? copy(key), vars)
 }
 
 // ── small pieces ────────────────────────────────────────────────────────────
 
-function PreparingCard(): ReactNode {
+function PreparingCard(props: FrameworkShares): ReactNode {
   return (
     <div className="auxc-state" role="status" aria-live="polite">
       <span className="auxc-spinner" aria-hidden="true" />
-      <p className="auxc-state-title">正在准备主会话上下文…</p>
-      <p className="auxc-state-body">用于临时提问，它单向镜像当前主会话的上下文；收起可保留，关闭后永久删除。</p>
+      <p className="auxc-state-title">{tt(props, 'preparingTitle')}</p>
+      <p className="auxc-state-body">{tt(props, 'preparingBody')}</p>
     </div>
   )
 }
 
-function FailedCard(props: { message: string; onRetry(): void }): ReactNode {
+function FailedCard(props: FrameworkShares & { message: string; onRetry(): void }): ReactNode {
   return (
     <div className="auxc-state" role="alert">
       <EmptyGlyph size={26} />
-      <p className="auxc-state-title">无法创建辅助会话</p>
+      <p className="auxc-state-title">{tt(props, 'failedTitle')}</p>
       <p className="auxc-state-body">{props.message}</p>
       <button type="button" className="auxc-retry" onClick={props.onRetry}>
-        重试
+        {tt(props, 'retry')}
       </button>
     </div>
   )
 }
 
 /**
- * `closing` state (PRD v2.0 §6.3): feedback is immediate; after 10s the copy
- * says the close is STILL running against the original target — never a
- * silent success.
+ * `closing` state: feedback is immediate; after 10s the copy says the close
+ * is STILL running against the original target — never a silent success.
+ * (Operational feedback, not a risk warning: it appears only AFTER the user
+ * closed, per the silent-close decision.)
  */
-function ClosingCard(props: { target: string }): ReactNode {
+function ClosingCard(props: FrameworkShares & { target: string }): ReactNode {
   const [elapsed, setElapsed] = useState(false)
   useEffect(() => {
     const timer = setTimeout(() => setElapsed(true), 10_000)
@@ -96,47 +112,43 @@ function ClosingCard(props: { target: string }): ReactNode {
   return (
     <div className="auxc-state" role="status" aria-live="polite" data-aux-close="closing">
       <span className="auxc-spinner" aria-hidden="true" />
-      <p className="auxc-state-title">{elapsed ? '仍在关闭辅助会话…' : '辅助会话正在关闭…'}</p>
-      <p className="auxc-state-body">
-        {elapsed ? '清理时间已超过 10 秒，仍在处理 ' : '正在释放 '}
-        {props.target}
-        。完成后该标签会自动移除。
-      </p>
+      <p className="auxc-state-title">{tt(props, elapsed ? 'closingTitleLong' : 'closingTitle')}</p>
+      <p className="auxc-state-body">{tt(props, elapsed ? 'closingBodyLong' : 'closingBody', { target: props.target })}</p>
     </div>
   )
 }
 
 /** `closeFailed` state: exact target + the failure + 重试关闭 (same operation). */
-function CloseFailedCard(props: { target: string; error: string | undefined; onRetry(): void }): ReactNode {
+function CloseFailedCard(props: FrameworkShares & { target: string; error: string | undefined; onRetry(): void }): ReactNode {
   return (
     <div className="auxc-state" role="alert" data-aux-close="failed">
       <EmptyGlyph size={26} />
-      <p className="auxc-state-title">关闭未完成：{props.target}</p>
+      <p className="auxc-state-title">{tt(props, 'closeFailedTitle', { target: props.target })}</p>
       <p className="auxc-state-body">
-        {props.error ?? '主机侧清理失败。'}内容暂时保留，清理责任仍在；重试将关闭同一条辅助会话。
+        {tt(props, 'closeFailedBody', { error: props.error ?? tt(props, 'closeFailedDefault') })}
       </p>
       <button type="button" className="auxc-retry" onClick={props.onRetry}>
-        重试关闭
+        {tt(props, 'retryClose')}
       </button>
     </div>
   )
 }
 
 /** `ended` state (T16): read-only explanation + explicit 新建 entry. */
-function EndedCard(props: { reason: string | undefined; onRestart(): void }): ReactNode {
+function EndedCard(props: FrameworkShares & { reason: string | undefined; onRestart(): void }): ReactNode {
   return (
     <div className="auxc-state" role="status" data-aux-close="ended">
       <EmptyGlyph size={26} />
-      <p className="auxc-state-title">辅助会话已结束</p>
-      <p className="auxc-state-body">{props.reason ?? '该会话已结束，临时会话不自动恢复。'}</p>
+      <p className="auxc-state-title">{tt(props, 'endedTitle')}</p>
+      <p className="auxc-state-body">{props.reason ?? tt(props, 'endedDefault')}</p>
       <button type="button" className="auxc-retry" onClick={props.onRestart}>
-        新建辅助会话
+        {tt(props, 'openNew')}
       </button>
     </div>
   )
 }
 
-function EmptyState(props: { text: string; hint?: string }): ReactNode {
+function EmptyState(props: FrameworkShares & { text: string; hint?: string }): ReactNode {
   return (
     <div className="auxc-empty">
       <span className="auxc-empty-glyph">
@@ -154,103 +166,41 @@ function sizeText(chars: number): string {
 }
 
 /**
- * What the panel may CLAIM about inheritance.
- *
- * The bar used to assert "已引用主会话上下文" unconditionally, which was wrong
- * whenever the injection or its fallback section failed — the operator saw an
- * empty side chat with a promise of inherited context (2026-10-14). It now
- * reports the delivered form measured by the Host.
+ * What the panel may CLAIM about inheritance — FACTS only (plan v2 decision:
+ * the top bar carries no risk clauses). The bar reports the delivered form
+ * measured by the Host, plus the inherited model route (plan P1/WP1.1).
  */
-function inheritanceStatus(runtime: AuxTabRuntime): { text: string; degraded: boolean; detail: string } {
+function inheritanceStatus(
+  props: FrameworkShares,
+  runtime: AuxTabRuntime,
+): { text: string; degraded: boolean; detail: string } {
   const report = runtime.inherited
+  const modelSuffix = runtime.model === undefined ? '' : tt(props, 'inhModel', { model: runtime.model })
   if (report === undefined) {
-    return { text: '临时会话 · 关闭后无法恢复', degraded: false, detail: '尚未收到主机的继承结果。' }
+    return { text: tt(props, 'inhPending') + modelSuffix, degraded: false, detail: tt(props, 'inhPendingDetail') }
   }
   const size = sizeText(report.chars)
   if (report.form === 'none') {
-    return {
-      text: '未继承主会话上下文 · 关闭后无法恢复',
-      degraded: true,
-      detail: 'mirrorHistory 已关闭，本次没有把主会话内容交给本会话的模型。',
-    }
+    return { text: tt(props, 'inhOff') + modelSuffix, degraded: true, detail: tt(props, 'inhOffDetail') }
   }
   if (report.form === 'summary') {
     if (report.chars === 0) {
-      return {
-        text: '主会话当前没有可继承的已提交记录 · 关闭后无法恢复',
-        degraded: false,
-        detail: '创建这一刻主会话的已提交转录为空（例如新会话、或首轮尚未提交），因此没有内容可继承。',
-      }
+      return { text: tt(props, 'inhEmpty') + modelSuffix, degraded: false, detail: tt(props, 'inhEmptyDetail') }
     }
-    return {
-      text: `已继承主会话摘要 · ${size} 字符（超长会话降级，非逐字历史）`,
-      degraded: true,
-      detail: '主会话过长，只有压缩摘要进入本会话的模型上下文（系统提示词 section），不是逐字转录。',
-    }
+    return { text: tt(props, 'inhSummary', { size }) + modelSuffix, degraded: true, detail: tt(props, 'inhSummaryDetail') }
   }
   if (report.truncated) {
     return {
-      text: `已继承主会话最近 ${String(report.entries)} 条 · ${size} 字符（较早 ${String(report.omitted)} 条超出预算）`,
+      text: tt(props, 'inhWindow', { entries: report.entries, size, omitted: report.omitted }) + modelSuffix,
       degraded: true,
-      detail: '完整的已提交转录超过 mirrorMaxChars 预算，只注入了最近的连续一段（隐藏 user/message，模型可见、聊天页不显示气泡）。',
+      detail: tt(props, 'inhWindowDetail'),
     }
   }
   return {
-    text: `已继承主会话上下文 ${String(report.entries)} 条 · ${size} 字符`,
+    text: tt(props, 'inhFull', { entries: report.entries, size }) + modelSuffix,
     degraded: false,
-    detail: '创建瞬间的已提交转录整段注入为一条隐藏 user/message：模型可见，聊天页按设计不显示为气泡。',
+    detail: tt(props, 'inhFullDetail'),
   }
-}
-
-// ── close confirmation (PRD §10 copy) ────────────────────────────────────────
-
-/**
- * Inline close confirmation: a slim warning bar at the top of the pane, no
- * modal, no mask, no portal — one click on 销毁 finishes what the tab's 关闭
- * started, 取消 (or Escape) returns to idle. Replacing the modal was a direct
- * operator request: the confirmation is guard rail, not a separate screen.
- */
-function ConfirmInline(props: { runtime: AuxTabRuntime }): ReactNode {
-  const [working, setWorking] = useState(false)
-  const tabId = props.runtime.tabId
-  const cancelRef = useRef<HTMLButtonElement | null>(null)
-  const cancel = (): void => getController()?.cancelClose(tabId)
-  const ctl = getController()
-  const target = ctl === null || ctl === undefined ? props.runtime.name : ctl.targetLabel(props.runtime)
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') cancel()
-    }
-    document.addEventListener('keydown', onKey)
-    cancelRef.current?.focus()
-    return () => document.removeEventListener('keydown', onKey)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabId])
-
-  return (
-    <div className="auxc-confirm" role="alertdialog" aria-label="确认销毁辅助会话">
-      <span className="auxc-confirm-text">
-        关闭「{target}」？将永久销毁，无法恢复。{props.runtime.running ? '正在回复的回合会中止。' : ''}
-      </span>
-      <span className="auxc-confirm-actions">
-        <button type="button" ref={cancelRef} className="auxc-confirm-cancel" onClick={cancel}>
-          取消
-        </button>
-        <button
-          type="button"
-          className="auxc-confirm-destroy"
-          disabled={working}
-          onClick={() => {
-            setWorking(true)
-            void getController()?.confirmClose(tabId, false)
-          }}
-        >
-          销毁
-        </button>
-      </span>
-    </div>
-  )
 }
 
 // ── Path B: idempotent guide capsule (打开) ──────────────────────────────────
@@ -267,8 +217,8 @@ export function AuxGuideEntry(props: FrameworkShares & { sessionId?: string }): 
         <EmptyGlyph size={22} />
       </span>
       <span className="auxc-guide-text">
-        <span className="auxc-guide-title">{t(props, 'panel')}</span>
-        <span className="auxc-guide-desc">{t(props, 'empty')}</span>
+        <span className="auxc-guide-title">{tt(props, 'panel')}</span>
+        <span className="auxc-guide-desc">{tt(props, 'empty')}</span>
       </span>
     </button>
   )
@@ -287,7 +237,7 @@ export function AuxNewMenu(props: FrameworkShares & { sessionId?: string; dismis
       }}
     >
       <span aria-hidden="true">＋</span>
-      <span>{t(props, 'openNew')}</span>
+      <span>{tt(props, 'openNew')}</span>
     </button>
   )
 }
@@ -301,14 +251,14 @@ export function AuxPaneTabTitle(props: FrameworkShares & TabInfoLike & { active?
   useEffect(() => {
     if (props.active === true && info?.tab !== undefined) getController()?.markSeen(info.tab.id)
   }, [props.active, info?.tab])
-  if (runtime === undefined) return <span className="auxc-tabtitle">{t(props, 'panel')}</span>
+  if (runtime === undefined) return <span className="auxc-tabtitle">{tt(props, 'panel')}</span>
   return (
     <span className={`auxc-tabtitle${runtime.unread ? ' auxc-tabtitle-unread' : ''}`}>
       {runtime.running && <span className="auxc-tabtitle-spinner" aria-hidden="true" />}
       {!runtime.running && runtime.unread && <span className="auxc-tabtitle-dot" />}
       <span className="auxc-tabtitle-name">{runtime.name}</span>
       <span className="auxc-sr-only">
-        {runtime.running ? '，正在回复中' : runtime.unread ? '，有未读回复' : ''}
+        {runtime.running ? tt(props, 'srRunning') : runtime.unread ? tt(props, 'srUnread') : ''}
       </span>
     </span>
   )
@@ -366,7 +316,7 @@ export function AuxPaneBody(props: FrameworkShares & TabInfoLike & { sessionId?:
   if (mainSessionId === undefined) {
     return (
       <div className="auxc-pane" data-aux-chat="pane">
-        <EmptyState text="还没有可镜像的主会话。" hint="打开一个主会话后重试。" />
+        <EmptyState {...props} text={tt(props, 'emptyMain')} hint={tt(props, 'emptyMainHint')} />
       </div>
     )
   }
@@ -376,21 +326,25 @@ export function AuxPaneBody(props: FrameworkShares & TabInfoLike & { sessionId?:
   if (ctl === null || runtime === undefined || runtime.phase === 'creating') {
     return (
       <div className="auxc-pane" data-aux-chat="pane">
-        <PreparingCard />
+        <PreparingCard {...props} />
       </div>
     )
   }
   if (runtime.phase === 'failed') {
     return (
       <div className="auxc-pane" data-aux-chat="pane">
-        <FailedCard message={runtime.message ?? '未知原因'} onRetry={() => getController()?.retryTabSession(runtime.tabId)} />
+        <FailedCard
+          {...props}
+          message={runtime.message ?? tt(props, 'unknownReason')}
+          onRetry={() => getController()?.retryTabSession(runtime.tabId)}
+        />
       </div>
     )
   }
   if (runtime.phase === 'closing') {
     return (
       <div className="auxc-pane" data-aux-chat="pane" data-aux-closing={runtime.sessionId ?? ''}>
-        <ClosingCard target={ctl === null ? runtime.name : ctl.targetLabel(runtime)} />
+        <ClosingCard {...props} target={ctl === null ? runtime.name : ctl.targetLabel(runtime)} />
       </div>
     )
   }
@@ -398,6 +352,7 @@ export function AuxPaneBody(props: FrameworkShares & TabInfoLike & { sessionId?:
     return (
       <div className="auxc-pane" data-aux-chat="pane" data-aux-closefailed={runtime.sessionId ?? ''}>
         <CloseFailedCard
+          {...props}
           target={ctl === null ? runtime.name : ctl.targetLabel(runtime)}
           error={runtime.closeError}
           onRetry={() => getController()?.retryClose(runtime.tabId)}
@@ -409,6 +364,7 @@ export function AuxPaneBody(props: FrameworkShares & TabInfoLike & { sessionId?:
     return (
       <div className="auxc-pane" data-aux-chat="pane" data-aux-ended={runtime.sessionId ?? ''}>
         <EndedCard
+          {...props}
           reason={runtime.phase === 'ended' ? runtime.endedReason : undefined}
           onRestart={() => getController()?.restartTabSession(runtime.tabId)}
         />
@@ -423,10 +379,9 @@ export function AuxPaneBody(props: FrameworkShares & TabInfoLike & { sessionId?:
     // verification can assert the embedded conversation is bound to the
     // auxiliary session — never to the main one (session isolation).
     <div className="auxc-pane" data-aux-chat="pane" data-aux-session={auxId ?? ''} ref={attachPaneRef}>
-      {runtime.closeState === 'confirming' && <ConfirmInline runtime={runtime} />}
       <div className="auxc-bar">
         {(() => {
-          const status = inheritanceStatus(runtime)
+          const status = inheritanceStatus(props, runtime)
           const mirrorWarnings = runtime.warnings.filter((line) => /mirror|section|scope|injection/i.test(line))
           return (
             <>
@@ -434,12 +389,13 @@ export function AuxPaneBody(props: FrameworkShares & TabInfoLike & { sessionId?:
                 className={status.degraded ? 'auxc-bar-warn' : 'auxc-bar-context'}
                 title={status.detail}
                 data-aux-inherited={runtime.inherited?.form ?? 'unknown'}
+                data-aux-model={runtime.model ?? ''}
               >
                 {status.text}
               </span>
               {mirrorWarnings.length > 0 && (
                 <span className="auxc-bar-warn" title={mirrorWarnings.join('\n')} data-aux-mirror-warnings={mirrorWarnings.length}>
-                  镜像警告 {mirrorWarnings.length} 条
+                  {tt(props, 'mirrorWarnings', { count: mirrorWarnings.length })}
                 </span>
               )}
             </>
@@ -447,18 +403,18 @@ export function AuxPaneBody(props: FrameworkShares & TabInfoLike & { sessionId?:
         })()}
         {ctl !== null && ctl.isMainArchived(runtime.mainSessionId) && (
           <span className="auxc-bar-warn" role="status">
-            主会话已归档：参考历史已冻结，本辅助会话不会随归档停止。
+            {tt(props, 'mainArchived')}
           </span>
         )}
-        <AuxBarAction mainSessionId={mainSessionId} auxId={auxId ?? ''} label={t(props, 'handoff')} />
+        <AuxBarAction {...props} mainSessionId={mainSessionId} auxId={auxId ?? ''} label={tt(props, 'handoff')} />
       </div>
       <div className="auxc-body">
         {auxId === undefined || reference === undefined || props.SessionProvider === undefined || props.renderSlot === undefined ? (
-          <EmptyState text="对话界面暂不可用" hint="重新打开该标签即可。" />
+          <EmptyState {...props} text={tt(props, 'convUnavailable')} hint={tt(props, 'convUnavailableHintReopen')} />
         ) : (
           <props.SessionProvider key={reference.sessionId} session={reference}>
             {props.renderSlot(SLOT_AUX_CHAT, {}, {
-              fallback: <EmptyState text="对话界面暂不可用" hint="ui-conversation 未装配，但辅助会话仍可在主机侧运行。" />,
+              fallback: <EmptyState {...props} text={tt(props, 'convUnavailable')} hint={tt(props, 'convUnavailableHintHost')} />,
             })}
           </props.SessionProvider>
         )}
@@ -467,7 +423,7 @@ export function AuxPaneBody(props: FrameworkShares & TabInfoLike & { sessionId?:
   )
 }
 
-function AuxBarAction(props: { mainSessionId: string; auxId?: string; label: string }): ReactNode {
+function AuxBarAction(props: FrameworkShares & { mainSessionId: string; auxId?: string; label: string }): ReactNode {
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
   if (props.auxId === undefined) return null
   return (
@@ -502,27 +458,29 @@ function useTabInfo(props: FrameworkShares & TabInfoLike): import('../types.ts')
 export function AuxHeaderToggle(props: FrameworkShares & { sessionId?: string }): ReactNode {
   const ctl = useController()
   const shown = ctl?.shown ?? false
-  const live = ctl?.tabs.length ?? 0
-  const label = t(props, 'panel')
+  // Single source of truth (plan P0/WP0.5): the dot reads the controller's
+  // derived indicators, never a separate count.
+  const live = ctl?.indicators().live ?? 0
+  const label = tt(props, 'panel')
   return (
     <button
       type="button"
       className={shown ? 'auxc-toggle auxc-toggle-on' : 'auxc-toggle'}
       aria-label={label}
       aria-pressed={shown}
-      title={shown ? t(props, 'close') : label}
+      title={shown ? tt(props, 'close') : label}
       onClick={() => {
         if (shown) ctl?.endActiveSession()
         else ctl?.openForMain(props.sessionId ?? ctl?.mainSessionId)
       }}
     >
       <IconPanelRight size={16} active={shown} />
-      {live > 0 && !shown ? <span className="auxc-toggle-dot" aria-label="有存活的辅助会话" /> : null}
+      {live > 0 && !shown ? <span className="auxc-toggle-dot" aria-label={tt(props, 'liveDot')} /> : null}
     </button>
   )
 }
 
-// ── Path A: frame-owned column ───────────────────────────────────────────────
+// ── Path A: frame-owned column (single-column mode when narrow) ─────────────
 
 function useMainSessionId(props: FrameworkShares): string | undefined {
   const useSessions = props.useSessions
@@ -539,51 +497,86 @@ export function AuxRightbarPanel(props: FrameworkShares & { width?: number }): R
     ctl?.setMainSession(mainSessionId)
   }, [ctl, mainSessionId])
   const mainRef = useRetained(props, mainSessionId, 'auxChatMain')
+  // Plan v2 P2/WP2.1: a narrow window degrades to SINGLE-COLUMN mode (the
+  // auxiliary session takes the column, with a back affordance) instead of
+  // the old dead-end card.
+  const single = (props.width ?? 1) <= 0
 
-  const canShow = (props.width ?? 1) > 0
-  if (!canShow) {
-    return <EmptyState text="当前窗口太窄，无法并排显示辅助会话。" hint="把窗口拉宽后重试。" />
-  }
   if (ctl === null || mainSessionId === undefined || mainRef === undefined || props.SessionProvider === undefined) {
     return (
-      <div className="auxc-column" data-aux-chat="rightbar">
-        <EmptyState text={t(props, 'empty')} hint="点会话头部的辅助会话按钮，它会镜像当前主会话并创建第一条。" />
+      <div className={single ? 'auxc-column auxc-column-single' : 'auxc-column'} data-aux-chat="rightbar" data-aux-single={single ? '1' : '0'}>
+        {single && <SingleColumnHead {...props} />}
+        <EmptyState {...props} text={tt(props, 'empty')} hint={tt(props, 'emptyColumnHint')} />
       </div>
     )
   }
   return (
     <props.SessionProvider session={mainRef}>
-      <AuxRightbarSession {...props} mainSessionId={mainSessionId} />
+      <AuxRightbarSession {...props} mainSessionId={mainSessionId} single={single} />
     </props.SessionProvider>
   )
 }
 
-export function AuxRightbarSession(props: FrameworkShares & { mainSessionId: string }): ReactNode {
+function SingleColumnHead(props: FrameworkShares): ReactNode {
+  return (
+    <div className="auxc-head" data-aux-single-head="1">
+      <span className="auxc-title">{tt(props, 'narrowTitle')}</span>
+      <span className="auxc-subtitle">{tt(props, 'narrowHint')}</span>
+      <button
+        type="button"
+        className="auxc-iconbtn"
+        title={tt(props, 'backToMain')}
+        aria-label={tt(props, 'backToMain')}
+        onClick={() => getController()?.setShown(false)}
+      >
+        <IconPanelRight size={14} />
+      </button>
+    </div>
+  )
+}
+
+export function AuxRightbarSession(props: FrameworkShares & { mainSessionId: string; single?: boolean }): ReactNode {
   const ctl = useController()
   const auxTab = ctl?.tabs.find((tab) => tab.mirrorOf === props.mainSessionId)
   const auxRef = useRetained(props, ctl?.activeId, RETAIN_SOURCE)
   const ready = auxTab !== undefined && auxRef !== undefined && props.SessionProvider !== undefined && props.renderSlot !== undefined
   return (
-    <div className="auxc-column" data-aux-chat="rightbar" data-aux-session={ctl?.activeId ?? ''}>
+    <div
+      className={props.single === true ? 'auxc-column auxc-column-single' : 'auxc-column'}
+      data-aux-chat="rightbar"
+      data-aux-single={props.single === true ? '1' : '0'}
+      data-aux-session={ctl?.activeId ?? ''}
+    >
       <div className="auxc-head">
-        <span className="auxc-title">{t(props, 'panel')}</span>
+        <span className="auxc-title">{tt(props, 'panel')}</span>
         {auxTab !== undefined && <span className="auxc-subtitle">{captionOf(auxTab.sessionId)}</span>}
+        {props.single === true && (
+          <button
+            type="button"
+            className="auxc-iconbtn"
+            title={tt(props, 'backToMain')}
+            aria-label={tt(props, 'backToMain')}
+            onClick={() => ctl?.setShown(false)}
+          >
+            <IconPanelRight size={14} />
+          </button>
+        )}
         <button
           type="button"
           className="auxc-iconbtn"
-          title="结束并销毁辅助会话"
-          aria-label="结束辅助会话"
+          title={tt(props, 'close')}
+          aria-label={tt(props, 'close')}
           onClick={() => ctl?.endActiveSession()}
         >
           <IconClose size={14} />
         </button>
       </div>
       {!ready || ctl === null || props.SessionProvider === undefined || props.renderSlot === undefined ? (
-        <EmptyState text={t(props, 'empty')} hint="点会话头部的辅助会话按钮打开第一条。" />
+        <EmptyState {...props} text={tt(props, 'empty')} hint={tt(props, 'emptyColumnHint')} />
       ) : (
         <props.SessionProvider key={auxRef.sessionId} session={auxRef as SessionReferenceLike}>
           {props.renderSlot(SLOT_AUX_CHAT, {}, {
-            fallback: <EmptyState text="对话界面暂不可用" hint="辅助会话已保留，重新打开右列即可。" />,
+            fallback: <EmptyState {...props} text={tt(props, 'convUnavailable')} hint={tt(props, 'convUnavailableHintKeep')} />,
           })}
         </props.SessionProvider>
       )}

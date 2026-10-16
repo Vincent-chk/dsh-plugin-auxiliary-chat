@@ -1,6 +1,6 @@
 {
   "name": "@dsh-ext/dsh-plugin-auxiliary-chat",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Sidebar auxiliary chat for DeepSeek Harness: a global panel entry beside the workspace-files and new-terminal rows, hosting temporary auxiliary sessions that mirror the main session's context one way and are permanently deleted when closed.",
   "license": "MIT",
@@ -68,6 +68,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "race-check": "node --experimental-transform-types src/client/__selfcheck__/race-check.mjs",
     "drop-check": "node --experimental-transform-types src/client/__selfcheck__/drop-router-check.mjs",
-    "mirror-check": "node --experimental-transform-types src/host/__selfcheck__/mirror-window-check.mjs"
+    "mirror-check": "node --experimental-transform-types src/host/__selfcheck__/mirror-window-check.mjs",
+    "hide-check": "node --experimental-transform-types src/host/__selfcheck__/hide-channel-check.mjs"
   }
 }

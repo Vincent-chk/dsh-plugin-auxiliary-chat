@@ -301,6 +301,12 @@ export interface HostDeps {
   readonly owned: Set<string>
   /** Whether created sessions are archived (hidden from the sidebar) at all. */
   readonly hideFromSidebar: boolean
+  /**
+   * Hiding channel preference (plan v2 P2/WP2.2): `auto` uses the native
+   * visibility face when the Host ever provides one (seam request S1) and
+   * falls back to the archive bridge; `archive`/`native` force either side.
+   */
+  readonly hideChannel?: 'auto' | 'archive' | 'native'
   /** Whether the main session's content (summary + prompt) is mirrored at all. */
   readonly mirrorHistory: boolean
   /**

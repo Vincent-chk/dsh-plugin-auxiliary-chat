@@ -215,6 +215,7 @@ export async function disposeAuxSession(deps: HostDeps, sessionId: string, optio
       throw new AuxChatError('aux-chat/not-registered', `session "${sessionId}" is not an auxiliary session of this plugin (already destroyed, or never created here)`)
     }
     deps.trace?.('dispose:repeat-converged')
+    await unarchiveIfArchived(deps, sessionId).catch(() => undefined)
     const converged = await deleteAuxArtifacts(deps, { sessionId })
     return options?.operationId === undefined ? converged : { ...converged, operationId: options.operationId }
   }
@@ -255,6 +256,10 @@ export async function disposeAuxSession(deps: HostDeps, sessionId: string, optio
   // Drop the archive short-circuit authorization with the registration: a
   // destroyed session must never keep answering `agent/pre-step` for its id.
   deps.owned.delete(sessionId)
+  // Hygiene (plan v2 P2/WP2.2): a destroyed session must not linger in the
+  // registry-global archive set — residue would ghost-list under the
+  // "only archived" filter. Idempotent and best-effort.
+  await unarchiveIfArchived(deps, sessionId).catch(() => undefined)
   const result = await deleteAuxArtifacts(deps, { sessionId, cwd: entry.info.cwd })
   if (failures.length > 0) {
     throw new AuxChatError('aux-chat/dispose-failed', `${sessionId} was unregistered but not fully torn down: ${failures.join('; ')}`, result)
@@ -444,7 +449,11 @@ export async function sweepHeaderOnlyAuxSessions(deps: HostDeps): Promise<AuxSwe
         }
         if (header.type !== 'session' || header.id !== sessionId) continue
         if ((header.delegationDepth ?? 0) > 0 || header.isSeeded === true) continue
-        await deleteAuxArtifacts(deps, { sessionId, cwd: header.cwd }, { detachAttempts: 1 })
+        await deleteAuxArtifacts(
+          deps,
+          { sessionId, ...(header.cwd === undefined ? {} : { cwd: header.cwd }) },
+          { detachAttempts: 1 },
+        )
         // Init may have archived the session before it died; leave the set.
         await unarchiveIfArchived(deps, sessionId)
         deps.owned.delete(sessionId)

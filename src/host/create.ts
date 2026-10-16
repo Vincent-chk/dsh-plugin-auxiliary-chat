@@ -27,6 +27,7 @@
  * @module host/init
  */
 import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { hideThroughChannel, resolveHideChannel } from './hide.ts'
 import { join } from 'node:path'
 import { assertSessionId, encodeSegment, projectionCachePath, sessionsRoot, archiveLedgerDir } from './env.ts'
 import { AuxChatError, reasonOf } from './errors.ts'
@@ -425,7 +426,12 @@ export async function initAuxSession(deps: HostDeps, request: AuxInitRequest): P
     warnings.push(`crash marker could not be written (${reasonOf(error)}); a Host crash would leave the session log behind`)
   }
 
-  if (deps.hideFromSidebar) await archiveAuxSession(deps, sessionId, warnings)
+  if (deps.hideFromSidebar) {
+    // Plan v2 P2/WP2.2: hide through the resolved channel; the archive bridge
+    // remains the fallback until DSH ships the native visibility seam (S1).
+    const channel = resolveHideChannel(deps)
+    await hideThroughChannel(deps, channel, sessionId, warnings, archiveAuxSession)
+  }
 
   // Delivered inheritance, for the panel: the transcript window when it landed,
   // otherwise the digest that the section carries, otherwise nothing.

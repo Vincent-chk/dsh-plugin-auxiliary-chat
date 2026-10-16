@@ -65,6 +65,7 @@
  */
 
 import { reasonOf } from './errors.ts'
+import { TITLE_PREFIX, TITLE_UNNAMED } from '../contract.ts'
 import type { DshModules, HostAgent, HostContext, HostDeps, HostSession } from './types.ts'
 
 /**
@@ -475,6 +476,17 @@ function renderTranscriptEntry(message: Record<string, unknown>, cap: number, co
         break
     }
   }
+  // Plan v2 P3/WP3.1 structural markers: the flattened transcript must still
+  // tell the model WHAT it is not seeing (reasoning) and how many tool calls
+  // one assistant entry bundled — the fidelity native role-level messages would give.
+  const reasoningCount = blocks.filter(
+    (block) => block['type'] === 'reasoning' || block['type'] === 'thinking',
+  ).length
+  if (reasoningCount > 0) parts.push(`[reasoning omitted ×${String(reasoningCount)}]`)
+  const toolNames = blocks
+    .filter((block) => block['type'] === 'tool-call')
+    .map((block) => (typeof block['name'] === 'string' ? block['name'] : 'tool'))
+  if (toolNames.length >= 2) parts.unshift(`[tool calls ×${String(toolNames.length)}: ${toolNames.join(', ')}]`)
   const joined = collapse ? oneLine(parts.join(' '), cap) : parts.join('\n\n')
   if (!collapse && joined.length > cap) return `${joined.slice(0, cap)}\n…[entry truncated ${String(joined.length - cap)} chars]`
   return joined
@@ -830,7 +842,7 @@ function buildTitle(deps: HostDeps, mainAgent: HostAgent): string {
       const snapshot = (get as (session: unknown) => unknown).call(sessionTitle, mainAgent.session)
       if (snapshot !== null && typeof snapshot === 'object') {
         const title = (snapshot as Record<string, unknown>)['title']
-        if (typeof title === 'string' && title.trim() !== '') return `[辅助] ${title.trim()}`.slice(0, 120)
+        if (typeof title === 'string' && title.trim() !== '') return `${TITLE_PREFIX} ${title.trim()}`.slice(0, 120)
       }
     }
   } catch {
@@ -838,5 +850,5 @@ function buildTitle(deps: HostDeps, mainAgent: HostAgent): string {
   }
   // Never the raw session id — an id is unreadable in a sidebar row and made
   // the residue rows look like leaked internals.
-  return '[辅助] 未命名会话'
+  return `${TITLE_PREFIX} ${TITLE_UNNAMED}`
 }
