@@ -1,12 +1,39 @@
-# DSH 上游议题草案（第三轮调研产出）
+# DSH 上游议题（第三轮调研产出 + 投递记录）
 
 > 2026-10-16 · 依据：PLAN-ROUND3 根因调研（宿主包源码逐行读证，包版本以本机
-> `~/.dsh/profiles/node_modules` 安装为准）。每份草案按「复现 / 根因证据 /
-> 影响 / 建议修复 / 对本插件的意义」组织，可直接整理为 GitHub issue。
+> `~/.dsh/profiles/node_modules` 安装为准）。每份议题按「复现 / 根因证据 /
+> 影响 / 建议修复 / 对本插件的意义」组织。
+
+## 投递状态与渠道评估（2026-10-16 已完成）
+
+**评估结论：无法开启上游 Issues，且按上游政策不应开启。** 证据：
+
+| 检查 | 结果 |
+| --- | --- |
+| 本账号在上游仓库的权限 | `{"admin":false,"maintain":false,"push":false,"triage":false,"pull":true}` —— 只有只读 |
+| 组织成员关系 | `orgs/deepseek-ai/memberships/Vincent-chk` → 404（非成员） |
+| 上游仓库设置 | `has_issues: false`（Issues 关闭）；开启 Issues 属仓库设置，需 **admin** 权限 |
+| 上游 `CONTRIBUTING.md` | 明确"report issues or bugs in GitHub Discussions"；并声明**暂不接受外部 PR** |
+| 上游 README §Community | "Submit feedback or bug reports through GitHub Discussions" |
+
+→ 上游以 **Discussions 取代 Issues** 作为对外反馈渠道，故按原计划的目标（把 U1/U2
+送达上游维护者）改由 Discussions 投递，分类 `Ideas`。
+
+**已投递（已核验 live）**：
+
+- **U1** → https://github.com/deepseek-ai/deepseek-harness/discussions/9842
+  （Ideas · by Vincent-chk · 2026-10-16）
+- **U2** → https://github.com/deepseek-ai/deepseek-harness/discussions/9843
+  （Ideas · by Vincent-chk · 2026-10-16）
+
+上游机制说明：CONTRIBUTING 指出维护团队通过 **discussion 的 upvote** 分配资源，
+因此这两篇的"投票数"就是后续推动信号；无需（也无法）在仓库内建 issue 追踪。
 
 ---
 
 ## 议题 U1：`sidebarRight` 硬注入导致禁用官方右栏后 10 个客户端包永不激活
+
+> 已投递：https://github.com/deepseek-ai/deepseek-harness/discussions/9842
 
 ### 复现
 1. 在 profile 的 `cordis.patch.yml` 中将 `ui-sidebar-right` 置为 `disabled: true`
@@ -50,6 +77,8 @@
 ---
 
 ## 议题 U2：合法的 close-handler 否决被按 error 级日志呈现（S4）
+
+> 已投递：https://github.com/deepseek-ai/deepseek-harness/discussions/9843
 
 ### 复现
 1. 任一插件用 `sidebarRight.registerCloseHandler(kind, handler)` 注册关闭钩子，
